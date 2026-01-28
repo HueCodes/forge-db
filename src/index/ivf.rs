@@ -9,7 +9,25 @@ use crate::kmeans::KMeans;
 use crate::vector::Vector;
 use rayon::prelude::*;
 use std::cmp::Ordering;
-use std::collections::BinaryHeap;
+use std::collections::{BinaryHeap, HashMap};
+
+// =============================================================================
+// Software Prefetching for x86_64
+// =============================================================================
+
+#[cfg(target_arch = "x86_64")]
+use std::arch::x86_64::{_mm_prefetch, _MM_HINT_T0};
+
+/// Prefetch data into L1 cache (temporal - expected to be reused).
+#[inline(always)]
+fn prefetch_read<T>(ptr: *const T) {
+    #[cfg(target_arch = "x86_64")]
+    unsafe {
+        _mm_prefetch(ptr as *const i8, _MM_HINT_T0);
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    let _ = ptr;
+}
 
 /// A vector with its computed distance, used for heap operations.
 #[derive(Clone)]
@@ -172,7 +190,16 @@ impl IVFIndex {
         let mut heap: BinaryHeap<ScoredVector> = BinaryHeap::with_capacity(k);
 
         for &partition_id in &nearest_partitions {
-            for vector in &self.partitions[partition_id] {
+            let partition = &self.partitions[partition_id];
+            let len = partition.len();
+
+            for i in 0..len {
+                // Prefetch 3 vectors ahead to hide memory latency
+                if i + 3 < len {
+                    prefetch_read(partition[i + 3].data.as_ptr());
+                }
+
+                let vector = &partition[i];
                 let distance = self.metric.compute(query, &vector.data);
 
                 if heap.len() < k {
@@ -278,6 +305,114 @@ impl IVFIndex {
             .map(|query| self.search(&query.data, k))
             .collect()
     }
+
+    /// Batch search optimized for cache efficiency.
+    ///
+    /// Groups queries by nearest partition to maximize cache reuse.
+    /// Instead of processing each query independently, this method:
+    /// 1. Finds nearest partitions for all queries upfront
+    /// 2. Groups queries by which partitions they need to search
+    /// 3. Processes partition-by-partition, keeping data hot in cache
+    ///
+    /// # Arguments
+    /// * `queries` - Slice of query vectors (anything that can be dereferenced to &[f32])
+    /// * `k` - Number of neighbors to return per query
+    ///
+    /// # Returns
+    /// Vector of results for each query, in the same order as input.
+    pub fn batch_search_optimized<Q: AsRef<[f32]>>(
+        &self,
+        queries: &[Q],
+        k: usize,
+    ) -> Vec<Vec<(u64, f32)>> {
+        if queries.is_empty() {
+            return Vec::new();
+        }
+
+        // Step 1: Find nearest partitions for all queries
+        let query_partitions: Vec<(usize, Vec<usize>)> = queries
+            .iter()
+            .enumerate()
+            .map(|(qi, q)| {
+                let q = q.as_ref();
+                let mut centroid_distances: Vec<(usize, f32)> = self
+                    .centroids
+                    .iter()
+                    .enumerate()
+                    .map(|(idx, c)| (idx, euclidean_distance_squared(q, &c.data)))
+                    .collect();
+
+                centroid_distances.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+
+                let partitions: Vec<usize> = centroid_distances
+                    .iter()
+                    .take(self.nprobe)
+                    .map(|(idx, _)| *idx)
+                    .collect();
+
+                (qi, partitions)
+            })
+            .collect();
+
+        // Step 2: Build partition -> queries mapping
+        let mut partition_queries: HashMap<usize, Vec<usize>> = HashMap::new();
+        for (qi, partitions) in &query_partitions {
+            for &p in partitions {
+                partition_queries.entry(p).or_default().push(*qi);
+            }
+        }
+
+        // Step 3: Initialize heaps for each query
+        let mut heaps: Vec<BinaryHeap<ScoredVector>> = (0..queries.len())
+            .map(|_| BinaryHeap::with_capacity(k))
+            .collect();
+
+        // Step 4: Process partition by partition (cache-friendly)
+        for (partition_id, query_indices) in partition_queries {
+            let partition = &self.partitions[partition_id];
+            let len = partition.len();
+
+            for i in 0..len {
+                // Prefetch ahead
+                if i + 3 < len {
+                    prefetch_read(partition[i + 3].data.as_ptr());
+                }
+
+                let vector = &partition[i];
+
+                // Score against each query
+                for &qi in &query_indices {
+                    let q = queries[qi].as_ref();
+                    let distance = self.metric.compute(q, &vector.data);
+
+                    let heap = &mut heaps[qi];
+                    if heap.len() < k {
+                        heap.push(ScoredVector {
+                            id: vector.id,
+                            distance,
+                        });
+                    } else if distance < heap.peek().unwrap().distance {
+                        heap.pop();
+                        heap.push(ScoredVector {
+                            id: vector.id,
+                            distance,
+                        });
+                    }
+                }
+            }
+        }
+
+        // Step 5: Convert to sorted results
+        heaps
+            .into_iter()
+            .map(|heap| {
+                let mut results: Vec<(u64, f32)> =
+                    heap.into_iter().map(|sv| (sv.id, sv.distance)).collect();
+                results.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+                results
+            })
+            .collect()
+    }
 }
 
 #[cfg(test)]
@@ -355,5 +490,72 @@ mod tests {
 
         index.set_nprobe(100); // More than number of partitions
         assert_eq!(index.nprobe(), 5); // Should be clamped
+    }
+
+    #[test]
+    fn test_batch_search_optimized() {
+        let vectors: Vec<Vector> = (0..1000).map(|i| Vector::random(i, 64)).collect();
+
+        let mut index = IVFIndex::build(vectors.clone(), 10, DistanceMetric::EuclideanSquared);
+        index.set_nprobe(3);
+
+        // Create queries as Vec<f32>
+        let queries: Vec<Vec<f32>> = (0..10)
+            .map(|i| vectors[i * 50].data.to_vec())
+            .collect();
+
+        let results = index.batch_search_optimized(&queries, 5);
+
+        assert_eq!(results.len(), 10);
+        for r in &results {
+            assert_eq!(r.len(), 5);
+            // Results should be sorted by distance
+            for i in 1..r.len() {
+                assert!(r[i - 1].1 <= r[i].1);
+            }
+        }
+    }
+
+    #[test]
+    fn test_batch_search_optimized_consistency() {
+        // Test that optimized batch gives same results as individual search
+        let vectors: Vec<Vector> = (0..500).map(|i| Vector::random(i, 32)).collect();
+
+        let mut index = IVFIndex::build(vectors.clone(), 5, DistanceMetric::EuclideanSquared);
+        index.set_nprobe(5); // Search all partitions for determinism
+
+        let queries: Vec<Vec<f32>> = (0..5)
+            .map(|i| vectors[i * 20].data.to_vec())
+            .collect();
+
+        // Get optimized batch results
+        let batch_results = index.batch_search_optimized(&queries, 10);
+
+        // Get individual results
+        let individual_results: Vec<Vec<(u64, f32)>> = queries
+            .iter()
+            .map(|q| index.search(q, 10))
+            .collect();
+
+        // Results should match
+        assert_eq!(batch_results.len(), individual_results.len());
+        for (batch, indiv) in batch_results.iter().zip(individual_results.iter()) {
+            assert_eq!(batch.len(), indiv.len());
+            // Check that we get the same IDs
+            let batch_ids: std::collections::HashSet<u64> = batch.iter().map(|(id, _)| *id).collect();
+            let indiv_ids: std::collections::HashSet<u64> = indiv.iter().map(|(id, _)| *id).collect();
+            assert_eq!(batch_ids, indiv_ids, "Optimized batch and individual search should find same IDs");
+        }
+    }
+
+    #[test]
+    fn test_batch_search_optimized_empty() {
+        let vectors: Vec<Vector> = (0..100).map(|i| Vector::random(i, 16)).collect();
+        let index = IVFIndex::build(vectors, 5, DistanceMetric::Euclidean);
+
+        let empty_queries: Vec<Vec<f32>> = vec![];
+        let results = index.batch_search_optimized(&empty_queries, 10);
+
+        assert!(results.is_empty());
     }
 }
