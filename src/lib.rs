@@ -35,5 +35,5 @@ pub use dataset::{recall_at_k, Dataset};
 pub use distance::DistanceMetric;
 pub use index::{BruteForceIndex, HNSWIndex, IVFIndex, IVFPQIndex};
 pub use kmeans::KMeans;
-pub use pq::{CompressedVectors, ProductQuantizer};
-pub use vector::{AlignedVector, Vector};
+pub use pq::{CompressedVectors, FlatCompressedVectors, ProductQuantizer};
+pub use vector::{AlignedVector, Vector, VectorStore};
