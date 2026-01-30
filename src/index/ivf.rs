@@ -85,13 +85,9 @@ impl IVFIndex {
     /// # Returns
     /// A new IVFIndex ready for search queries.
     pub fn build(vectors: Vec<Vector>, n_clusters: usize, metric: DistanceMetric) -> Self {
-        println!("Building IVF index with {} clusters", n_clusters);
-
         // Train k-means clustering
         let mut kmeans = KMeans::new(n_clusters, 100);
         kmeans.fit(&vectors);
-
-        println!("Assigning vectors to partitions");
 
         // Initialize empty partitions
         let mut partitions: Vec<Vec<Vector>> = (0..n_clusters).map(|_| Vec::new()).collect();
@@ -103,27 +99,12 @@ impl IVFIndex {
                 .iter()
                 .enumerate()
                 .map(|(idx, c)| (idx, euclidean_distance_squared(&vector.data, &c.data)))
-                .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap())
+                .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
                 .unwrap()
                 .0;
 
             partitions[nearest].push(vector);
         }
-
-        // Print partition statistics
-        let sizes: Vec<usize> = partitions.iter().map(|p| p.len()).collect();
-        let max_size = sizes.iter().max().copied().unwrap_or(0);
-        let min_size = sizes.iter().min().copied().unwrap_or(0);
-        let avg_size = if !sizes.is_empty() {
-            sizes.iter().sum::<usize>() / sizes.len()
-        } else {
-            0
-        };
-
-        println!(
-            "Partition sizes - min: {}, max: {}, avg: {}",
-            min_size, max_size, avg_size
-        );
 
         Self {
             centroids: kmeans.centroids,
@@ -178,7 +159,7 @@ impl IVFIndex {
             .map(|(idx, c)| (idx, euclidean_distance_squared(query, &c.data)))
             .collect();
 
-        centroid_distances.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+        centroid_distances.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
 
         let nearest_partitions: Vec<usize> = centroid_distances
             .iter()
@@ -221,7 +202,7 @@ impl IVFIndex {
         let mut results: Vec<(u64, f32)> =
             heap.into_iter().map(|sv| (sv.id, sv.distance)).collect();
 
-        results.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+        results.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
         results
     }
 
@@ -261,7 +242,7 @@ impl IVFIndex {
             .map(|(idx, c)| (idx, euclidean_distance_squared(query, &c.data)))
             .collect();
 
-        centroid_distances.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+        centroid_distances.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
 
         let nearest_partitions: Vec<usize> = centroid_distances
             .iter()
@@ -292,7 +273,7 @@ impl IVFIndex {
         let mut results: Vec<(u64, f32)> =
             heap.into_iter().map(|sv| (sv.id, sv.distance)).collect();
 
-        results.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+        results.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
         results
     }
 
@@ -342,7 +323,7 @@ impl IVFIndex {
                     .map(|(idx, c)| (idx, euclidean_distance_squared(q, &c.data)))
                     .collect();
 
-                centroid_distances.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+                centroid_distances.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
 
                 let partitions: Vec<usize> = centroid_distances
                     .iter()
@@ -408,7 +389,7 @@ impl IVFIndex {
             .map(|heap| {
                 let mut results: Vec<(u64, f32)> =
                     heap.into_iter().map(|sv| (sv.id, sv.distance)).collect();
-                results.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+                results.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
                 results
             })
             .collect()

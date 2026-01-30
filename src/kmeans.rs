@@ -146,7 +146,7 @@ impl KMeans {
                     .iter()
                     .enumerate()
                     .map(|(idx, c)| (idx, euclidean_distance_squared(&v.data, &c.data)))
-                    .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap())
+                    .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
                     .unwrap()
                     .0
             })
@@ -223,7 +223,7 @@ impl KMeans {
             .map(|(idx, c)| (idx, euclidean_distance_squared(query, &c.data)))
             .collect();
 
-        distances.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+        distances.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
         distances.truncate(k);
         distances.into_iter().map(|(idx, _)| idx).collect()
     }

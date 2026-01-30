@@ -58,10 +58,6 @@ impl ProductQuantizer {
         );
 
         let subvector_dim = dim / n_subvectors;
-        println!(
-            "Training PQ with {} subvectors of dimension {}",
-            n_subvectors, subvector_dim
-        );
 
         // Train codebooks in parallel for each subspace
         let codebooks: Vec<Vec<Vector>> = (0..n_subvectors)
@@ -117,7 +113,7 @@ impl ProductQuantizer {
                     .iter()
                     .enumerate()
                     .map(|(idx, centroid)| (idx, euclidean_distance_squared(subvector, &centroid.data)))
-                    .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap())
+                    .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
                     .unwrap()
                     .0 as u8
             })
@@ -206,10 +202,10 @@ impl ProductQuantizer {
         let mut i = 0;
         while i + 4 <= n {
             sum += unsafe {
-                *lookup_table.get_unchecked(i).get_unchecked(codes.get_unchecked(i).clone() as usize)
-                    + *lookup_table.get_unchecked(i + 1).get_unchecked(codes.get_unchecked(i + 1).clone() as usize)
-                    + *lookup_table.get_unchecked(i + 2).get_unchecked(codes.get_unchecked(i + 2).clone() as usize)
-                    + *lookup_table.get_unchecked(i + 3).get_unchecked(codes.get_unchecked(i + 3).clone() as usize)
+                *lookup_table.get_unchecked(i).get_unchecked(*codes.get_unchecked(i) as usize)
+                    + *lookup_table.get_unchecked(i + 1).get_unchecked(*codes.get_unchecked(i + 1) as usize)
+                    + *lookup_table.get_unchecked(i + 2).get_unchecked(*codes.get_unchecked(i + 2) as usize)
+                    + *lookup_table.get_unchecked(i + 3).get_unchecked(*codes.get_unchecked(i + 3) as usize)
             };
             i += 4;
         }
@@ -217,7 +213,7 @@ impl ProductQuantizer {
         // Handle remainder
         while i < n {
             sum += unsafe {
-                *lookup_table.get_unchecked(i).get_unchecked(codes.get_unchecked(i).clone() as usize)
+                *lookup_table.get_unchecked(i).get_unchecked(*codes.get_unchecked(i) as usize)
             };
             i += 1;
         }
@@ -393,18 +389,7 @@ impl ProductQuantizer4Bit {
             n_subvectors
         );
 
-        if n_subvectors % 2 != 0 {
-            eprintln!(
-                "Warning: n_subvectors={} is odd. Consider using an even value for optimal 4-bit packing.",
-                n_subvectors
-            );
-        }
-
         let subvector_dim = dim / n_subvectors;
-        println!(
-            "Training 4-bit PQ with {} subvectors of dimension {} (16 centroids each)",
-            n_subvectors, subvector_dim
-        );
 
         // Train codebooks in parallel for each subspace with k=16
         let codebooks: Vec<Vec<Vector>> = (0..n_subvectors)
@@ -460,7 +445,7 @@ impl ProductQuantizer4Bit {
                     .iter()
                     .enumerate()
                     .map(|(idx, centroid)| (idx, euclidean_distance_squared(subvector, &centroid.data)))
-                    .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap())
+                    .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
                     .unwrap()
                     .0 as u8
             })
@@ -576,23 +561,10 @@ impl CompressedVectors4Bit {
         let pq = ProductQuantizer4Bit::train(&vectors, n_subvectors);
 
         // Encode all vectors in parallel (packed format)
-        println!("Encoding {} vectors with 4-bit PQ", vectors.len());
         let codes: Vec<Vec<u8>> = vectors.par_iter().map(|v| pq.encode_packed(v)).collect();
 
         // Extract IDs
         let ids: Vec<u64> = vectors.iter().map(|v| v.id).collect();
-
-        // Calculate and print compression ratio
-        let original_bytes = vectors.len() * vectors[0].dim() * 4; // f32 = 4 bytes
-        let compressed_bytes = codes.iter().map(|c| c.len()).sum::<usize>();
-        let ratio = original_bytes as f32 / compressed_bytes as f32;
-
-        println!(
-            "4-bit PQ Compression: {} MB -> {} KB ({:.1}x)",
-            original_bytes / (1024 * 1024),
-            compressed_bytes / 1024,
-            ratio
-        );
 
         Self { pq, codes, ids }
     }
@@ -616,7 +588,7 @@ impl CompressedVectors4Bit {
             .collect();
 
         // Sort by distance and take top k
-        results.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+        results.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
         results.truncate(k);
         results
     }
@@ -702,7 +674,6 @@ impl FlatCompressedVectors {
         let mut codes = Vec::with_capacity(n_vectors * n_subvectors);
 
         // Encode all vectors and append to flat buffer
-        println!("Encoding {} vectors into flat storage", n_vectors);
         for v in &vectors {
             let vector_codes = pq.encode(v);
             codes.extend_from_slice(&vector_codes);
@@ -710,20 +681,6 @@ impl FlatCompressedVectors {
 
         // Extract IDs
         let ids: Vec<u64> = vectors.iter().map(|v| v.id).collect();
-
-        // Calculate and print compression ratio
-        if !vectors.is_empty() {
-            let original_bytes = n_vectors * vectors[0].dim() * 4; // f32 = 4 bytes
-            let compressed_bytes = codes.len();
-            let ratio = original_bytes as f32 / compressed_bytes as f32;
-
-            println!(
-                "Flat compression: {} MB -> {} MB ({:.1}x)",
-                original_bytes / (1024 * 1024),
-                compressed_bytes / (1024 * 1024),
-                ratio
-            );
-        }
 
         Self {
             pq,
@@ -817,7 +774,7 @@ impl FlatCompressedVectors {
         }
 
         // Sort by distance and take top k
-        results.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+        results.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
         results.truncate(k);
         results
     }
@@ -841,7 +798,7 @@ impl FlatCompressedVectors {
             .collect();
 
         // Sort by distance and take top k
-        results.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+        results.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
         results.truncate(k);
         results
     }
@@ -900,23 +857,10 @@ impl CompressedVectors {
         let pq = ProductQuantizer::train(&vectors, n_subvectors);
 
         // Encode all vectors in parallel
-        println!("Encoding {} vectors", vectors.len());
         let codes: Vec<Vec<u8>> = vectors.par_iter().map(|v| pq.encode(v)).collect();
 
         // Extract IDs
         let ids: Vec<u64> = vectors.iter().map(|v| v.id).collect();
-
-        // Calculate and print compression ratio
-        let original_bytes = vectors.len() * vectors[0].dim() * 4; // f32 = 4 bytes
-        let compressed_bytes = codes.len() * n_subvectors;
-        let ratio = original_bytes as f32 / compressed_bytes as f32;
-
-        println!(
-            "Compression: {} MB -> {} MB ({:.1}x)",
-            original_bytes / (1024 * 1024),
-            compressed_bytes / (1024 * 1024),
-            ratio
-        );
 
         Self { pq, codes, ids }
     }
@@ -941,7 +885,7 @@ impl CompressedVectors {
             .collect();
 
         // Sort by distance and take top k
-        results.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+        results.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
         results.truncate(k);
         results
     }

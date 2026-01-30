@@ -24,7 +24,7 @@ use std::collections::HashMap;
 // We prefetch 2-3 cache lines ahead to overlap memory access with computation.
 
 #[cfg(target_arch = "x86_64")]
-use std::arch::x86_64::{_mm_prefetch, _MM_HINT_T0, _MM_HINT_T1};
+use std::arch::x86_64::{_mm_prefetch, _MM_HINT_T0};
 
 /// Prefetch data into L1 cache (temporal - expected to be reused).
 /// Call 2-3 iterations ahead of where you're reading.
@@ -35,19 +35,6 @@ fn prefetch_read<T>(ptr: *const T) {
         _mm_prefetch(ptr as *const i8, _MM_HINT_T0);
     }
     // No-op on non-x86_64 platforms
-    #[cfg(not(target_arch = "x86_64"))]
-    let _ = ptr;
-}
-
-/// Prefetch data into L2 cache (non-temporal - streaming access pattern).
-/// Use for data that will only be read once.
-#[inline(always)]
-#[allow(dead_code)]
-fn prefetch_read_nt<T>(ptr: *const T) {
-    #[cfg(target_arch = "x86_64")]
-    unsafe {
-        _mm_prefetch(ptr as *const i8, _MM_HINT_T1);
-    }
     #[cfg(not(target_arch = "x86_64"))]
     let _ = ptr;
 }
@@ -74,8 +61,7 @@ pub struct IVFPQIndex {
     /// Number of partitions to probe during search
     nprobe: usize,
     /// Distance metric (used for IVF assignment)
-    #[allow(dead_code)]
-    metric: DistanceMetric,
+    _metric: DistanceMetric,
     /// Original vectors for re-ranking (optional, improves recall)
     /// Stored as HashMap for O(1) lookup
     original_vectors: Option<std::collections::HashMap<u64, Vector>>,
@@ -99,19 +85,8 @@ impl IVFPQIndex {
     ) -> Self {
         use rand::seq::SliceRandom;
 
-        println!(
-            "Building IVF-PQ index: {} vectors, {} clusters, {} subvectors",
-            vectors.len(),
-            n_clusters,
-            n_subvectors
-        );
-
         // Step 1: Train IVF centroids on a sample (for speed)
         let train_sample_size = vectors.len().min(30_000);
-        println!(
-            "Step 1: Training IVF centroids (sample size: {})",
-            train_sample_size
-        );
 
         let training_sample: Vec<Vector> = if vectors.len() <= train_sample_size {
             vectors.clone()
@@ -131,7 +106,6 @@ impl IVFPQIndex {
         let centroids = kmeans.centroids;
 
         // Step 2: Assign vectors to partitions (parallel)
-        println!("Step 2: Assigning {} vectors to partitions", vectors.len());
         let assignments: Vec<usize> = vectors
             .par_iter()
             .map(|vector| {
@@ -139,7 +113,7 @@ impl IVFPQIndex {
                     .iter()
                     .enumerate()
                     .map(|(idx, c)| (idx, euclidean_distance_squared(&vector.data, &c.data)))
-                    .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap())
+                    .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
                     .unwrap()
                     .0
             })
@@ -151,7 +125,6 @@ impl IVFPQIndex {
         }
 
         // Step 3: Train PQ on residuals (vector - centroid) for better recall
-        println!("Step 3: Training PQ on residuals");
         let pq_sample_size = vectors.len().min(100_000);
 
         // Compute residuals for PQ training
@@ -180,7 +153,6 @@ impl IVFPQIndex {
         let pq = ProductQuantizer::train(&residual_sample, n_subvectors);
 
         // Step 4: Encode residuals in each partition
-        println!("Step 4: Encoding residuals");
         let partitions: Vec<PartitionData> = partition_vectors
             .into_iter()
             .enumerate()
@@ -207,25 +179,12 @@ impl IVFPQIndex {
             })
             .collect();
 
-        // Print statistics
-        let total_vectors: usize = partitions.iter().map(|p| p.ids.len()).sum();
-        let total_bytes: usize = partitions
-            .iter()
-            .map(|p| p.codes.len() * n_subvectors)
-            .sum();
-
-        println!(
-            "Index built: {} vectors, {} MB compressed",
-            total_vectors,
-            total_bytes / (1024 * 1024)
-        );
-
         Self {
             centroids,
             pq,
             partitions,
             nprobe: 1,
-            metric,
+            _metric: metric,
             original_vectors: None,
             rerank_factor: 1,
         }
@@ -350,7 +309,7 @@ impl IVFPQIndex {
 
         // Convert heap to sorted vector
         let mut results: Vec<(u64, f32)> = heap.into_iter().map(|h| (h.0, h.1)).collect();
-        results.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+        results.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
 
         // Re-rank with original vectors if enabled
         if let Some(ref id_to_vec) = self.original_vectors {
@@ -365,7 +324,7 @@ impl IVFPQIndex {
                 })
                 .collect();
 
-            reranked.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+            reranked.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
             reranked.truncate(k);
             return reranked;
         }
@@ -516,7 +475,7 @@ impl IVFPQIndex {
             .into_iter()
             .map(|heap| {
                 let mut r: Vec<(u64, f32)> = heap.into_iter().map(|h| (h.0, h.1)).collect();
-                r.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+                r.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
                 r
             })
             .collect();
@@ -535,7 +494,7 @@ impl IVFPQIndex {
                     })
                     .collect();
 
-                reranked.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+                reranked.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
                 reranked.truncate(k);
                 *result = reranked;
             }

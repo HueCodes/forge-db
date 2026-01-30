@@ -237,8 +237,7 @@ pub struct HNSWIndex {
     /// Maximum layer in the graph.
     max_layer: usize,
     /// Max connections per layer (except layer 0).
-    #[allow(dead_code)]
-    m: usize,
+    _m: usize,
     /// Max connections generally.
     m_max: usize,
     /// Max connections in layer 0 (typically m * 2).
@@ -276,7 +275,7 @@ impl HNSWIndex {
             entry_point: None,
             entry_cache: EntryPointCache::new(),
             max_layer: 0,
-            m,
+            _m: m,
             m_max: m,
             m_max0,
             ef_construction,
@@ -387,6 +386,7 @@ impl HNSWIndex {
     }
 
     /// Get pointer to vector data for prefetching.
+    #[cfg(target_arch = "x86_64")]
     #[inline(always)]
     fn get_vector_ptr(&self, node_id: NodeIndex) -> *const f32 {
         let start = node_id * self.dim;
@@ -418,16 +418,14 @@ impl HNSWIndex {
     /// Uses x86_64 prefetch intrinsics. Safe because:
     /// - Prefetch hints are advisory - invalid addresses are ignored
     /// - We verify the pointer is within our allocated vector_data
+    #[cfg(target_arch = "x86_64")]
     #[inline(always)]
     fn prefetch_vector(&self, node_id: NodeIndex) {
-        #[cfg(target_arch = "x86_64")]
-        {
-            let ptr = self.get_vector_ptr(node_id);
-            // SAFETY: _mm_prefetch is safe with any pointer - it's just a hint
-            // to the CPU. Invalid addresses result in no-op, not crashes.
-            unsafe {
-                _mm_prefetch(ptr as *const i8, _MM_HINT_T0);
-            }
+        let ptr = self.get_vector_ptr(node_id);
+        // SAFETY: _mm_prefetch is safe with any pointer - it's just a hint
+        // to the CPU. Invalid addresses result in no-op, not crashes.
+        unsafe {
+            _mm_prefetch(ptr as *const i8, _MM_HINT_T0);
         }
     }
 
@@ -612,15 +610,18 @@ impl HNSWIndex {
     }
 
     /// Prefetch neighbor vectors from a slice of NodeIds.
+    #[cfg(target_arch = "x86_64")]
     #[inline(always)]
     fn prefetch_neighbors_from_slice(&self, neighbors: &[NodeId]) {
-        #[cfg(target_arch = "x86_64")]
-        {
-            for &neighbor_id in neighbors.iter().take(4) {
-                self.prefetch_vector(neighbor_id as NodeIndex);
-            }
+        for &neighbor_id in neighbors.iter().take(4) {
+            self.prefetch_vector(neighbor_id as NodeIndex);
         }
     }
+
+    /// No-op on non-x86_64 platforms.
+    #[cfg(not(target_arch = "x86_64"))]
+    #[inline(always)]
+    fn prefetch_neighbors_from_slice(&self, _neighbors: &[NodeId]) {}
 
     /// Beam search on layer 0 with prefetching.
     ///
