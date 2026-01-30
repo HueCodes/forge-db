@@ -1,7 +1,5 @@
 # forge-db
 
-High-performance vector database in Rust.
-
 ## Features
 
 - IVF-PQ indexing with residual quantization
