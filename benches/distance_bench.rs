@@ -47,9 +47,7 @@ fn benchmark_distances(c: &mut Criterion) {
 
     let mut group = c.benchmark_group("squared_euclidean_128");
     group.bench_function("scalar", |b| {
-        b.iter(|| {
-            scalar::euclidean_distance_squared(black_box(&v1.data), black_box(&v2.data))
-        })
+        b.iter(|| scalar::euclidean_distance_squared(black_box(&v1.data), black_box(&v2.data)))
     });
     group.bench_function("simd", |b| {
         b.iter(|| simd::euclidean_distance_squared(black_box(&v1.data), black_box(&v2.data)))

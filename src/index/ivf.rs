@@ -481,9 +481,7 @@ mod tests {
         index.set_nprobe(3);
 
         // Create queries as Vec<f32>
-        let queries: Vec<Vec<f32>> = (0..10)
-            .map(|i| vectors[i * 50].data.to_vec())
-            .collect();
+        let queries: Vec<Vec<f32>> = (0..10).map(|i| vectors[i * 50].data.to_vec()).collect();
 
         let results = index.batch_search_optimized(&queries, 5);
 
@@ -505,27 +503,28 @@ mod tests {
         let mut index = IVFIndex::build(vectors.clone(), 5, DistanceMetric::EuclideanSquared);
         index.set_nprobe(5); // Search all partitions for determinism
 
-        let queries: Vec<Vec<f32>> = (0..5)
-            .map(|i| vectors[i * 20].data.to_vec())
-            .collect();
+        let queries: Vec<Vec<f32>> = (0..5).map(|i| vectors[i * 20].data.to_vec()).collect();
 
         // Get optimized batch results
         let batch_results = index.batch_search_optimized(&queries, 10);
 
         // Get individual results
-        let individual_results: Vec<Vec<(u64, f32)>> = queries
-            .iter()
-            .map(|q| index.search(q, 10))
-            .collect();
+        let individual_results: Vec<Vec<(u64, f32)>> =
+            queries.iter().map(|q| index.search(q, 10)).collect();
 
         // Results should match
         assert_eq!(batch_results.len(), individual_results.len());
         for (batch, indiv) in batch_results.iter().zip(individual_results.iter()) {
             assert_eq!(batch.len(), indiv.len());
             // Check that we get the same IDs
-            let batch_ids: std::collections::HashSet<u64> = batch.iter().map(|(id, _)| *id).collect();
-            let indiv_ids: std::collections::HashSet<u64> = indiv.iter().map(|(id, _)| *id).collect();
-            assert_eq!(batch_ids, indiv_ids, "Optimized batch and individual search should find same IDs");
+            let batch_ids: std::collections::HashSet<u64> =
+                batch.iter().map(|(id, _)| *id).collect();
+            let indiv_ids: std::collections::HashSet<u64> =
+                indiv.iter().map(|(id, _)| *id).collect();
+            assert_eq!(
+                batch_ids, indiv_ids,
+                "Optimized batch and individual search should find same IDs"
+            );
         }
     }
 

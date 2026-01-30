@@ -46,10 +46,7 @@ pub fn euclidean_distance_squared(a: &[f32], b: &[f32]) -> f32 {
 pub fn dot_product(a: &[f32], b: &[f32]) -> f32 {
     assert_eq!(a.len(), b.len(), "Vector dimensions must match");
 
-    a.iter()
-        .zip(b.iter())
-        .map(|(x, y)| x * y)
-        .sum()
+    a.iter().zip(b.iter()).map(|(x, y)| x * y).sum()
 }
 
 /// Compute the cosine similarity between two vectors.
@@ -89,6 +86,18 @@ pub fn cosine_distance(a: &[f32], b: &[f32]) -> f32 {
     1.0 - cosine_similarity(a, b)
 }
 
+/// Compute the Manhattan (L1) distance between two vectors.
+///
+/// Returns sum(|a[i] - b[i]|)
+///
+/// Also known as taxicab distance or city block distance.
+#[inline]
+pub fn manhattan_distance(a: &[f32], b: &[f32]) -> f32 {
+    assert_eq!(a.len(), b.len(), "Vector dimensions must match");
+
+    a.iter().zip(b.iter()).map(|(x, y)| (x - y).abs()).sum()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -124,5 +133,26 @@ mod tests {
         let a = vec![1.0, 0.0];
         let b = vec![0.0, 1.0];
         assert!(cosine_similarity(&a, &b).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_manhattan_distance_simple() {
+        let a = vec![0.0, 0.0];
+        let b = vec![3.0, 4.0];
+        assert!((manhattan_distance(&a, &b) - 7.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_manhattan_distance_identical() {
+        let a = vec![1.0, 2.0, 3.0];
+        assert!(manhattan_distance(&a, &a) < 1e-6);
+    }
+
+    #[test]
+    fn test_manhattan_distance_negative() {
+        let a = vec![1.0, -2.0, 3.0];
+        let b = vec![-1.0, 2.0, -3.0];
+        // |1-(-1)| + |-2-2| + |3-(-3)| = 2 + 4 + 6 = 12
+        assert!((manhattan_distance(&a, &b) - 12.0).abs() < 1e-6);
     }
 }

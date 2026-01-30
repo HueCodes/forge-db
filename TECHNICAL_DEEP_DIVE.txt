@@ -1,0 +1,644 @@
+================================================================================
+                           FORGE-DB TECHNICAL DEEP DIVE
+================================================================================
+
+A pure-Rust high-performance vector database for similarity search applications.
+
+================================================================================
+1. OVERVIEW
+================================================================================
+
+forge-db is a vector database optimized for approximate nearest neighbor (ANN)
+search. It provides SIMD-optimized distance computations and multiple index
+types for different use cases.
+
+Architecture Diagram:
++-------------------+
+|   Application     |
++-------------------+
+         |
+         v
++-------------------+     +-------------------+
+|   Query API       |---->|   Metadata Store  |
+|   (search, batch) |     |   (filter, index) |
++-------------------+     +-------------------+
+         |
+         v
++-------------------+
+|   Index Layer     |
+|  - IVF-PQ Index   |  <-- Primary index for large-scale search
+|  - HNSW Index     |  <-- Graph-based alternative
+|  - IVF Index      |  <-- Clustering without quantization
+|  - BruteForce     |  <-- Ground truth baseline
++-------------------+
+         |
+         v
++-------------------+
+|   Distance Layer  |
+|  - AVX-512        |  16 floats/iteration (nightly)
+|  - AVX2+FMA       |  8 floats/iteration
+|  - NEON           |  4 floats/iteration (ARM)
+|  - Scalar         |  Fallback
++-------------------+
+
+IVF-PQ Search Flow:
+1. Query arrives (D-dimensional float vector)
+2. Find nprobe nearest IVF centroids (O(k) distance computations)
+3. For each selected partition:
+   a. Compute query residual: q' = q - centroid
+   b. Build PQ lookup table: M x 256 precomputed distances
+   c. Scan partition using table lookups (O(1) per vector)
+4. Collect top-k candidates in bounded heap
+5. Optional: Re-rank candidates using original vectors
+6. Return sorted (id, distance) pairs
+
+Index Build Flow:
+1. Train IVF centroids via k-means (sqrt(n) clusters typical)
+2. Assign each vector to nearest centroid
+3. Compute residuals: r = v - centroid
+4. Train PQ codebooks (256 centroids per subspace)
+5. Encode residuals to M-byte codes
+6. Store codes grouped by partition
+
+================================================================================
+2. ALGORITHMS
+================================================================================
+
+IVF (Inverted File Index)
+-------------------------
+Partitions vectors into clusters using k-means. At search time, only nprobe
+nearest partitions are scanned, reducing search space from O(n) to O(n/k * nprobe).
+
+Key parameters:
+- n_clusters (k): Number of partitions. sqrt(n) is a good default.
+- nprobe: Partitions to scan. Higher = better recall, slower search.
+
+Trade-off: More clusters means faster search but potentially lower recall if
+the query's true neighbors are spread across many partitions.
+
+
+Product Quantization (PQ)
+-------------------------
+Compresses D-dimensional vectors to M bytes:
+
+1. Split: Divide D dimensions into M subvectors of D/M dimensions each
+2. Train: Learn 256 centroids per subspace via k-means (codebook)
+3. Encode: Map each subvector to nearest centroid index (1 byte each)
+
+Compression ratio: (D * 4 bytes) / M bytes = 4D/M
+For D=128, M=8: 512 bytes -> 8 bytes = 64x compression
+
+8-bit PQ: 256 centroids per subspace (default)
+4-bit PQ: 16 centroids per subspace (2x memory savings, lower recall)
+
+
+Asymmetric Distance Computation (ADC)
+-------------------------------------
+The key insight: query vector stays uncompressed, only database is quantized.
+
+Distance computation:
+  d(q, c) = sum_m d(q_m, centroid[c_m])
+
+Where:
+- q_m is the m-th subvector of the query
+- c_m is the code (centroid index) for subvector m
+
+Optimization via lookup table:
+1. Precompute table[m][k] = d(q_m, codebook[m][k]) for all m,k
+2. For each database vector: sum table[m][code[m]] for m in 0..M
+
+This converts O(D) distance to O(M) table lookups + additions.
+
+
+SIMD Dispatch
+-------------
+Runtime CPU feature detection selects optimal implementation:
+
+#[cfg(target_arch = "x86_64")]
+fn dispatch() -> fn(&[f32], &[f32]) -> f32 {
+    if is_x86_feature_detected!("avx512f") { avx512_impl }
+    else if is_x86_feature_detected!("avx2") { avx2_impl }
+    else { scalar_impl }
+}
+
+AVX2 example (Euclidean distance):
+- Load 8 floats at once: _mm256_loadu_ps
+- Compute diff: _mm256_sub_ps
+- FMA accumulate: _mm256_fmadd_ps(diff, diff, sum)
+- Horizontal sum at end
+
+Speedups: AVX2 ~5-10x over scalar, AVX-512 ~30-50% over AVX2
+
+
+HNSW (Hierarchical Navigable Small World)
+-----------------------------------------
+Graph-based index with layered structure:
+- Layer 0: All vectors, dense connections (max M neighbors)
+- Layer i: Subset of vectors, sparser connections
+- Top layers provide fast coarse navigation
+
+Search: Start at entry point on top layer, greedily descend while exploring
+ef_search candidates per layer. Returns approximate nearest neighbors.
+
+Advantages over IVF-PQ:
+- Better recall at low latency
+- No training phase required
+- Dynamic insertions
+
+Disadvantages:
+- Higher memory usage (graph edges)
+- Not compatible with quantization compression
+
+================================================================================
+3. PERFORMANCE
+================================================================================
+
+Memory Layout Optimizations
+---------------------------
+Vectors stored in contiguous memory for cache-friendly sequential access.
+
+IVF-PQ memory layout:
+- Partition codes: Vec<Vec<u8>> - codes within partition are contiguous
+- PQ codes: M bytes per vector (not interleaved across vectors)
+- IDs: u64 per vector
+
+For 1M vectors, D=128, M=8:
+- Original: 1M * 128 * 4 = 512 MB
+- PQ codes: 1M * 8 = 8 MB
+- IDs: 1M * 8 = 8 MB
+- Centroids/codebooks: ~1 MB
+- Total: ~17 MB (30x compression)
+
+
+Cache Optimization
+------------------
+PQ lookup tables fit in L1 cache:
+- Table size: M * 256 * 4 bytes
+- For M=8: 8 * 256 * 4 = 8 KB (fits in 32KB L1)
+
+Prefetching:
+- Software prefetch 3 vectors ahead during partition scan
+- Hides memory latency by overlapping load with computation
+
+Batch search optimization:
+- Group queries by shared partitions
+- Build lookup table once per partition, score multiple queries
+- Amortizes table construction cost
+
+
+Parallelization Strategy
+------------------------
+Multiple levels of parallelism using Rayon:
+
+Build time:
+- PQ codebook training: Parallel across M subspaces
+- Partition assignment: Parallel across vectors
+
+Search time:
+- Batch queries: Parallel chunks (sized for L2 cache)
+- Within batch: Sequential for cache locality
+
+Thread pool: Rayon's work-stealing scheduler
+
+
+Profile-Guided Optimization (PGO)
+---------------------------------
+Two-pass build for maximum performance:
+
+1. Instrumented build:
+   cargo build --profile release-instrumented
+   ./target/release-instrumented/example_binary  # generates profile data
+
+2. PGO-optimized build:
+   RUSTFLAGS="-C profile-use=path/to/profile" cargo build --release-pgo
+
+Typical improvement: 5-15% faster search
+
+
+Memory Bandwidth Considerations
+-------------------------------
+Vector search is memory-bound. Key metrics:
+
+Sequential scan: ~10-15 GB/s on modern DDR4
+L3 cache: ~100 GB/s
+L1 cache: ~300 GB/s
+
+PQ reduces memory traffic proportionally to compression ratio.
+For 64x compression: effective bandwidth increases 64x.
+
+
+Benchmarks (approximate, hardware-dependent)
+--------------------------------------------
+SIFT1M dataset (1M vectors, D=128), single-threaded:
+
+| Operation           | Time      | Recall@10 |
+|---------------------|-----------|-----------|
+| Brute force         | 50ms      | 100%      |
+| IVF-PQ nprobe=1     | 0.3ms     | 65%       |
+| IVF-PQ nprobe=8     | 1.2ms     | 85%       |
+| IVF-PQ nprobe=16    | 2.0ms     | 92%       |
+| IVF-PQ + rerank     | 2.5ms     | 96%       |
+| HNSW ef_search=100  | 0.8ms     | 95%       |
+
+================================================================================
+4. CODEBASE
+================================================================================
+
+Module Structure
+----------------
+src/
+  lib.rs              - Public API, re-exports
+  error.rs            - Error types (ForgeDbError)
+  vector.rs           - Vector, VectorStore, AlignedVector
+  distance/
+    mod.rs            - DistanceMetric enum, dispatch
+    scalar.rs         - Scalar implementations
+    simd.rs           - AVX2/AVX-512/NEON implementations
+  index/
+    mod.rs            - Index trait, re-exports
+    brute_force.rs    - Exact nearest neighbor
+    ivf.rs            - IVF without quantization
+    ivf_pq.rs         - IVF-PQ (main index)
+    ivf_pq_builder.rs - Builder pattern with auto-tuning
+    hnsw.rs           - Hierarchical NSW graph index
+  pq.rs               - ProductQuantizer, 4-bit/8-bit PQ
+  kmeans.rs           - K-means clustering
+  metadata/
+    mod.rs            - Re-exports
+    value.rs          - MetadataValue enum
+    filter.rs         - FilterCondition enum
+    store.rs          - MetadataStore with bitmap indices
+  persistence/
+    mod.rs            - Persistable trait
+    format.rs         - File format constants
+  metrics.rs          - IndexStatistics, SearchStatistics, ResourceLimits
+
+Total: ~10,500 lines of Rust
+
+
+Key Structs
+-----------
+Vector:
+  - id: u64
+  - data: Vec<f32>  (or Arc<[f32]> for shared)
+
+IVFPQIndex:
+  - centroids: Vec<Vector>           # IVF cluster centers
+  - pq: ProductQuantizer             # Trained codebooks
+  - partitions: Vec<RwLock<PartitionData>>  # Per-cluster storage
+  - nprobe: AtomicUsize              # Thread-safe search parameter
+  - original_vectors: Option<...>    # For re-ranking
+
+PartitionData:
+  - ids: Vec<u64>
+  - codes: Vec<Vec<u8>>              # M bytes per vector
+  - tombstones: HashSet<u64>         # Deleted vector IDs
+
+ProductQuantizer:
+  - codebooks: Vec<Vec<Vector>>      # M codebooks, 256 centroids each
+  - n_subvectors: usize              # M
+  - subvector_dim: usize             # D/M
+  - dim: usize                       # Original dimension
+
+MetadataStore:
+  - metadata: HashMap<u64, HashMap<String, MetadataValue>>
+  - bitmap_indices: HashMap<String, HashMap<MetadataValue, RoaringBitmap>>
+
+
+Thread Safety
+-------------
+IVFPQIndex implements Send + Sync:
+- nprobe: AtomicUsize for lock-free reads/writes
+- partitions: RwLock for concurrent reads, exclusive writes
+- original_vectors: RwLock for re-ranking access
+
+Pattern:
+  let partition = self.partitions[id].read().unwrap();  // Shared read
+  let mut partition = self.partitions[id].write().unwrap();  // Exclusive
+
+================================================================================
+5. DESIGN DECISIONS
+================================================================================
+
+Why IVF-PQ as Primary Index?
+----------------------------
+Trade-offs considered:
+
+| Criterion        | IVF-PQ | HNSW  | LSH   |
+|------------------|--------|-------|-------|
+| Memory           | Best   | High  | Medium|
+| Search latency   | Good   | Best  | Medium|
+| Recall           | Good   | Best  | Medium|
+| Build time       | Medium | Medium| Fast  |
+| Dynamic updates  | Good   | Best  | Poor  |
+
+IVF-PQ chosen for:
+1. Memory efficiency critical for million+ vector scale
+2. Tunable recall/speed via nprobe
+3. Re-ranking option for high-recall use cases
+
+
+Why Pure Rust?
+--------------
+Advantages:
+- Memory safety without runtime overhead
+- Fearless concurrency with ownership model
+- Excellent SIMD intrinsics via std::arch
+- Single binary deployment (no C++ dependencies)
+- Cross-platform with cargo
+
+Trade-offs accepted:
+- Longer compile times
+- Less mature ML ecosystem
+- Fewer pre-built bindings
+
+
+8-bit PQ Default (vs 4-bit)
+---------------------------
+8-bit (256 centroids per subspace):
+- Better quantization accuracy
+- Higher recall for same nprobe
+- 1 byte per subvector
+
+4-bit (16 centroids per subspace):
+- 2x memory bandwidth savings
+- Lower recall (need more nprobe to compensate)
+- Packing overhead (2 codes per byte)
+
+Default: 8-bit for better out-of-box recall.
+4-bit available for memory-constrained deployments.
+
+
+Tombstone Deletion (vs Immediate)
+---------------------------------
+Tombstones mark deleted vectors without immediate removal:
+- O(1) deletion (just add to HashSet)
+- No index structure modification
+- Compact() when fragmentation high
+
+Alternative (immediate deletion):
+- O(n) partition scan to find and remove
+- Index structure modification during search
+- Complex concurrency handling
+
+Tombstones simpler and sufficient for most workloads.
+
+
+Roaring Bitmaps for Metadata
+----------------------------
+Roaring bitmaps chosen over:
+- BitVec: Poor for sparse data
+- HashSet: O(n) set operations
+- B-tree: Higher memory overhead
+
+Roaring provides:
+- Compressed storage for sparse/dense data
+- Fast set operations (AND, OR)
+- O(1) contains() check
+
+Enables efficient filter pushdown during search.
+
+================================================================================
+6. TESTING
+================================================================================
+
+Unit Tests
+----------
+Every module has #[cfg(test)] mod tests { ... }
+
+Key test patterns:
+- Roundtrip: encode -> decode -> verify equality
+- Consistency: batch results match individual calls
+- Edge cases: empty input, dimension mismatch, etc.
+
+Run: cargo test
+
+
+Integration Tests
+-----------------
+End-to-end scenarios in tests/ directory:
+- Build index, search, verify recall
+- Persistence roundtrip
+- Concurrent access patterns
+
+
+Benchmarks
+----------
+Criterion benchmarks in benches/:
+- distance_bench.rs   - SIMD vs scalar speedups
+- search_bench.rs     - Query latency distribution
+- ivf_bench.rs        - IVF-PQ at various nprobe
+- pq_bench.rs         - Encoding/decoding throughput
+- hnsw_bench.rs       - HNSW search performance
+
+Run: cargo bench
+
+
+Recall Measurement
+------------------
+Examples compare approximate results to brute-force ground truth:
+- examples/ivf_recall.rs
+- examples/pq_recall.rs
+- examples/hnsw_recall.rs
+
+Recall@k = |ANN top-k intersect exact top-k| / k
+
+
+Property-Based Testing (Future)
+-------------------------------
+Consider adding with proptest crate:
+- Distance triangle inequality
+- Search result ordering invariants
+- Serialization roundtrip for arbitrary vectors
+
+
+Fuzz Testing (Future)
+---------------------
+Consider cargo-fuzz for:
+- Malformed persistence file handling
+- Extreme dimension/parameter combinations
+- Concurrent operation sequences
+
+================================================================================
+7. INTERVIEW PREP
+================================================================================
+
+System Design Questions
+-----------------------
+
+Q: Design a vector search system for 100M vectors.
+
+A: Key considerations:
+   - Memory: 100M * 128D * 4B = 51GB (won't fit in RAM)
+   - Solution: IVF-PQ with disk-backed partitions
+   - Sharding: Partition across machines by IVF cluster
+   - Replication: Each shard replicated for availability
+
+   Architecture:
+   - Query router: Finds relevant shards via centroid comparison
+   - Shard servers: Each holds subset of IVF partitions
+   - Aggregator: Merges results from shards
+
+   Latency budget (50ms):
+   - Routing: 5ms
+   - Parallel shard queries: 30ms
+   - Aggregation: 10ms
+   - Network: 5ms
+
+
+Q: How would you handle real-time updates?
+
+A: Multiple strategies:
+   1. Write-ahead log + periodic rebuild
+   2. Tombstone deletion + compaction
+   3. Delta index (small recent index merged with search)
+
+   forge-db uses tombstones for simplicity.
+   For high-write workloads, consider separate "hot" index.
+
+
+Algorithm Questions
+-------------------
+
+Q: Explain the recall/speed trade-off in IVF.
+
+A: IVF partitions vectors into k clusters. Search scans nprobe partitions.
+   - nprobe=1: Fast but misses vectors if query near cluster boundary
+   - nprobe=k: Equivalent to brute force, perfect recall
+
+   Optimal nprobe depends on:
+   - Cluster quality (balanced sizes improve recall)
+   - Acceptable latency budget
+   - Required recall target
+
+
+Q: Why use asymmetric distance in PQ?
+
+A: Symmetric: quantize both query and database
+   Asymmetric: only quantize database, query stays full precision
+
+   Asymmetric is more accurate because:
+   - Query quantization error compounds with database error
+   - Lookup table can be exact for query subvectors
+   - No accuracy loss on query side
+
+
+Q: How does HNSW achieve O(log n) search?
+
+A: Hierarchical layers with exponentially decreasing density:
+   - Top layer: few nodes, long-range connections
+   - Bottom layer: all nodes, local connections
+
+   Search descends layers, using upper layers for coarse navigation.
+   Similar to skip lists but with graph structure.
+
+
+Trade-off Discussions
+---------------------
+
+Q: When would you choose HNSW over IVF-PQ?
+
+A: HNSW preferred when:
+   - Memory is not constrained
+   - Highest recall required
+   - Dynamic insertions common
+   - Index build time acceptable
+
+   IVF-PQ preferred when:
+   - Memory constrained (10x less than HNSW)
+   - Recall can be tuned via nprobe
+   - Batch updates acceptable
+   - Very large scale (100M+ vectors)
+
+
+Q: What are the limits of PQ compression?
+
+A: Compression introduces quantization error:
+   - More subvectors (M): More codes, higher accuracy
+   - Fewer subvectors: Better compression, lower recall
+
+   Minimum practical: M >= D/16 (16 dimensions per subspace)
+   Below this, quantization error dominates distance computation.
+
+   For D=128: M=8 is common (16 dims/subspace, 64x compression)
+
+================================================================================
+8. ROADMAP
+================================================================================
+
+Near-term (Next Release)
+------------------------
+- [ ] Comprehensive rustdoc on all public APIs
+- [ ] More examples (filtered search, batch operations)
+- [ ] CI/CD with benchmarks regression testing
+
+Medium-term (3-6 months)
+------------------------
+- [ ] Disk-backed partitions for larger-than-RAM indexes
+- [ ] gRPC server for remote access
+- [ ] Python bindings via PyO3
+- [ ] Quantization-aware training for higher recall
+
+Long-term (6+ months)
+---------------------
+- [ ] GPU acceleration (CUDA/Metal)
+- [ ] Distributed index across multiple nodes
+- [ ] Learned index structures
+- [ ] Streaming/incremental index training
+
+================================================================================
+9. APPENDIX
+================================================================================
+
+Memory Calculations
+-------------------
+For n vectors of dimension D with M subvectors:
+
+IVF-PQ memory:
+  PQ codes:        n * M bytes
+  Vector IDs:      n * 8 bytes
+  IVF centroids:   k * D * 4 bytes
+  PQ codebooks:    M * 256 * (D/M) * 4 bytes = 256 * D * 4 bytes
+  Tombstones:      ~8 bytes per deleted vector
+  Total estimate:  n * (M + 8) + (k + 256) * D * 4 bytes
+
+Example (n=1M, D=128, M=8, k=1000):
+  Codes: 8 MB, IDs: 8 MB, Centroids: 0.5 MB, Codebooks: 0.1 MB
+  Total: ~17 MB (vs 512 MB uncompressed)
+
+
+Glossary
+--------
+ADC     - Asymmetric Distance Computation
+ANN     - Approximate Nearest Neighbor
+AVX     - Advanced Vector Extensions (x86 SIMD)
+FMA     - Fused Multiply-Add
+HNSW    - Hierarchical Navigable Small World
+IVF     - Inverted File Index
+NEON    - ARM SIMD instruction set
+NSW     - Navigable Small World graph
+PQ      - Product Quantization
+SIMD    - Single Instruction Multiple Data
+SDC     - Symmetric Distance Computation
+
+
+Distance Metrics Formulas
+-------------------------
+Euclidean:          sqrt(sum((a[i] - b[i])^2))
+Euclidean Squared:  sum((a[i] - b[i])^2)
+Cosine:             1 - (a . b) / (|a| * |b|)
+Dot Product:        -sum(a[i] * b[i])  (negated for min-heap)
+Manhattan:          sum(|a[i] - b[i]|)
+
+
+References
+----------
+- Jegou et al., "Product Quantization for Nearest Neighbor Search" (2011)
+- Malkov & Yashunin, "Efficient and robust approximate nearest neighbor
+  search using HNSW graphs" (2018)
+- Google ScaNN: https://github.com/google-research/google-research/tree/master/scann
+- Faiss: https://github.com/facebookresearch/faiss
+
+================================================================================
+                                    END
+================================================================================

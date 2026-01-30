@@ -50,10 +50,7 @@ fn main() {
     let elapsed = start.elapsed();
 
     let throughput = num_vectors as f64 / elapsed.as_secs_f64();
-    println!(
-        "Computed {} distances in {:.2?}",
-        num_vectors, elapsed
-    );
+    println!("Computed {} distances in {:.2?}", num_vectors, elapsed);
     println!("Throughput: {:.0} distances/second", throughput);
 
     // Check if SIMD is being used

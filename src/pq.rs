@@ -251,6 +251,133 @@ pub fn asymmetric_distance_flat_dispatch(table: &[f32], codes: &[u8]) -> f32 {
     asymmetric_distance_flat_scalar(table, codes)
 }
 
+/// Compute distances from multiple queries to a single vector using batch SIMD.
+///
+/// This is optimized for batch search where we have multiple lookup tables
+/// (one per query) and want to compute distances to the same vector codes.
+/// By processing multiple queries together, we amortize loop overhead and
+/// improve instruction-level parallelism.
+///
+/// # Arguments
+/// * `tables` - Slice of flat lookup tables, one per query
+/// * `codes` - PQ codes for a single vector
+///
+/// # Returns
+/// Vector of distances, one per query
+#[inline]
+pub fn batch_asymmetric_distance_dispatch(tables: &[&[f32]], codes: &[u8]) -> Vec<f32> {
+    #[cfg(target_arch = "x86_64")]
+    {
+        if is_x86_feature_detected!("avx2") && tables.len() >= 4 {
+            // SAFETY: We verified AVX2 is available
+            return unsafe { batch_asymmetric_distance_avx2(tables, codes) };
+        }
+    }
+    batch_asymmetric_distance_scalar(tables, codes)
+}
+
+/// Scalar implementation of batch distance computation.
+#[inline]
+pub fn batch_asymmetric_distance_scalar(tables: &[&[f32]], codes: &[u8]) -> Vec<f32> {
+    tables
+        .iter()
+        .map(|table| asymmetric_distance_flat_scalar(table, codes))
+        .collect()
+}
+
+/// AVX2 SIMD batch distance computation.
+///
+/// Processes 4 queries at a time using AVX2 registers to hold 4 accumulators.
+/// This reduces loop overhead and improves throughput for batch queries.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+#[inline]
+pub unsafe fn batch_asymmetric_distance_avx2(tables: &[&[f32]], codes: &[u8]) -> Vec<f32> {
+    let n_queries = tables.len();
+    let n_subvectors = codes.len();
+    let mut results = vec![0.0f32; n_queries];
+
+    // Process 4 queries at a time
+    let mut qi = 0;
+    while qi + 4 <= n_queries {
+        // 4 accumulator registers, one per query
+        let mut sum0 = _mm256_setzero_ps();
+        let mut sum1 = _mm256_setzero_ps();
+        let mut sum2 = _mm256_setzero_ps();
+        let mut sum3 = _mm256_setzero_ps();
+
+        let table0 = tables.get_unchecked(qi);
+        let table1 = tables.get_unchecked(qi + 1);
+        let table2 = tables.get_unchecked(qi + 2);
+        let table3 = tables.get_unchecked(qi + 3);
+
+        // Process 8 subvectors at a time
+        let mut m = 0;
+        while m + 8 <= n_subvectors {
+            // Build indices for this batch of 8 subvectors
+            let idx0 = (m * 256 + *codes.get_unchecked(m) as usize) as i32;
+            let idx1 = ((m + 1) * 256 + *codes.get_unchecked(m + 1) as usize) as i32;
+            let idx2 = ((m + 2) * 256 + *codes.get_unchecked(m + 2) as usize) as i32;
+            let idx3 = ((m + 3) * 256 + *codes.get_unchecked(m + 3) as usize) as i32;
+            let idx4 = ((m + 4) * 256 + *codes.get_unchecked(m + 4) as usize) as i32;
+            let idx5 = ((m + 5) * 256 + *codes.get_unchecked(m + 5) as usize) as i32;
+            let idx6 = ((m + 6) * 256 + *codes.get_unchecked(m + 6) as usize) as i32;
+            let idx7 = ((m + 7) * 256 + *codes.get_unchecked(m + 7) as usize) as i32;
+
+            let indices = _mm256_set_epi32(idx7, idx6, idx5, idx4, idx3, idx2, idx1, idx0);
+
+            // Gather from each table and accumulate
+            let v0 = _mm256_i32gather_ps::<4>(table0.as_ptr(), indices);
+            let v1 = _mm256_i32gather_ps::<4>(table1.as_ptr(), indices);
+            let v2 = _mm256_i32gather_ps::<4>(table2.as_ptr(), indices);
+            let v3 = _mm256_i32gather_ps::<4>(table3.as_ptr(), indices);
+
+            sum0 = _mm256_add_ps(sum0, v0);
+            sum1 = _mm256_add_ps(sum1, v1);
+            sum2 = _mm256_add_ps(sum2, v2);
+            sum3 = _mm256_add_ps(sum3, v3);
+
+            m += 8;
+        }
+
+        // Horizontal sum for each query
+        let sum0_arr: [f32; 8] = std::mem::transmute(sum0);
+        let sum1_arr: [f32; 8] = std::mem::transmute(sum1);
+        let sum2_arr: [f32; 8] = std::mem::transmute(sum2);
+        let sum3_arr: [f32; 8] = std::mem::transmute(sum3);
+
+        let mut total0: f32 = sum0_arr.iter().sum();
+        let mut total1: f32 = sum1_arr.iter().sum();
+        let mut total2: f32 = sum2_arr.iter().sum();
+        let mut total3: f32 = sum3_arr.iter().sum();
+
+        // Handle remaining subvectors
+        while m < n_subvectors {
+            let offset = m * 256 + *codes.get_unchecked(m) as usize;
+            total0 += *table0.get_unchecked(offset);
+            total1 += *table1.get_unchecked(offset);
+            total2 += *table2.get_unchecked(offset);
+            total3 += *table3.get_unchecked(offset);
+            m += 1;
+        }
+
+        *results.get_unchecked_mut(qi) = total0;
+        *results.get_unchecked_mut(qi + 1) = total1;
+        *results.get_unchecked_mut(qi + 2) = total2;
+        *results.get_unchecked_mut(qi + 3) = total3;
+
+        qi += 4;
+    }
+
+    // Handle remaining queries (< 4)
+    while qi < n_queries {
+        *results.get_unchecked_mut(qi) = asymmetric_distance_simd_avx2(tables.get_unchecked(qi), codes);
+        qi += 1;
+    }
+
+    results
+}
+
 /// Scalar fallback for flat table lookup.
 #[inline(always)]
 pub fn asymmetric_distance_flat_scalar(table: &[f32], codes: &[u8]) -> f32 {
@@ -310,8 +437,14 @@ pub unsafe fn asymmetric_distance_simd_avx2(table: &[f32], codes: &[u8]) -> f32 
     // Horizontal sum of the 8 floats in the AVX2 register
     // Extract to array and sum
     let sum_array: [f32; 8] = std::mem::transmute(sum);
-    let mut total: f32 = sum_array[0] + sum_array[1] + sum_array[2] + sum_array[3]
-        + sum_array[4] + sum_array[5] + sum_array[6] + sum_array[7];
+    let mut total: f32 = sum_array[0]
+        + sum_array[1]
+        + sum_array[2]
+        + sum_array[3]
+        + sum_array[4]
+        + sum_array[5]
+        + sum_array[6]
+        + sum_array[7];
 
     // Handle remaining subvectors (0-7) with scalar operations
     while i < n {
@@ -376,7 +509,7 @@ impl ProductQuantizer4Bit {
     /// # Arguments
     /// * `vectors` - Training vectors
     /// * `n_subvectors` - Number of subvectors (M). Must divide vector dimension evenly.
-    ///                    Should be even for optimal packing.
+    ///   Should be even for optimal packing.
     ///
     /// # Panics
     /// Panics if the vector dimension is not divisible by n_subvectors.
@@ -458,7 +591,7 @@ impl ProductQuantizer4Bit {
     /// If M is odd, the last byte has the final code in the lower nibble.
     pub fn encode_packed(&self, vector: &Vector) -> Vec<u8> {
         let codes = self.encode(vector);
-        let mut packed = Vec::with_capacity((codes.len() + 1) / 2);
+        let mut packed = Vec::with_capacity(codes.len().div_ceil(2));
 
         let mut i = 0;
         while i + 1 < codes.len() {
@@ -605,7 +738,7 @@ impl CompressedVectors4Bit {
 
     /// Get the bytes per vector (packed codes).
     pub fn bytes_per_vector(&self) -> usize {
-        (self.pq.n_subvectors + 1) / 2
+        self.pq.n_subvectors.div_ceil(2)
     }
 }
 
@@ -736,7 +869,10 @@ impl FlatCompressedVectors {
         let start = index * self.pq.n_subvectors;
         // SAFETY: We maintain the invariant that codes.len() == n_vectors * n_subvectors,
         // and index < n_vectors is checked by debug_assert above.
-        unsafe { self.codes.get_unchecked(start..start + self.pq.n_subvectors) }
+        unsafe {
+            self.codes
+                .get_unchecked(start..start + self.pq.n_subvectors)
+        }
     }
 
     /// Get the vector ID at the given index.
@@ -908,9 +1044,7 @@ mod tests {
     #[test]
     fn test_pq_encode_decode() {
         // Create test vectors (need 256+ for k-means with k=256)
-        let vectors: Vec<Vector> = (0..300)
-            .map(|i| Vector::random(i, 16))
-            .collect();
+        let vectors: Vec<Vector> = (0..300).map(|i| Vector::random(i, 16)).collect();
 
         let pq = ProductQuantizer::train(&vectors, 4);
 
@@ -925,9 +1059,7 @@ mod tests {
     #[test]
     fn test_compressed_vectors_search() {
         // Create test vectors (need 256+ for k-means with k=256)
-        let vectors: Vec<Vector> = (0..300)
-            .map(|i| Vector::random(i, 32))
-            .collect();
+        let vectors: Vec<Vector> = (0..300).map(|i| Vector::random(i, 32)).collect();
 
         let compressed = CompressedVectors::new(vectors.clone(), 4);
 
@@ -946,9 +1078,7 @@ mod tests {
     #[test]
     fn test_lookup_table() {
         // Need 256+ vectors for k-means with k=256
-        let vectors: Vec<Vector> = (0..300)
-            .map(|i| Vector::random(i, 16))
-            .collect();
+        let vectors: Vec<Vector> = (0..300).map(|i| Vector::random(i, 16)).collect();
 
         let pq = ProductQuantizer::train(&vectors, 4);
 
@@ -971,9 +1101,7 @@ mod tests {
     #[test]
     fn test_simd_distance_matches_scalar() {
         // Need 256+ vectors for k-means with k=256
-        let vectors: Vec<Vector> = (0..300)
-            .map(|i| Vector::random(i, 64))
-            .collect();
+        let vectors: Vec<Vector> = (0..300).map(|i| Vector::random(i, 64)).collect();
 
         let pq = ProductQuantizer::train(&vectors, 8);
         let codes = pq.encode(&vectors[0]);
@@ -1003,9 +1131,7 @@ mod tests {
         }
 
         // Need 256+ vectors for k-means with k=256
-        let vectors: Vec<Vector> = (0..300)
-            .map(|i| Vector::random(i, 128))
-            .collect();
+        let vectors: Vec<Vector> = (0..300).map(|i| Vector::random(i, 128)).collect();
 
         // Test with different subvector counts (8, 16, 32)
         for n_subvectors in [8, 16, 32] {
@@ -1037,9 +1163,7 @@ mod tests {
 
         // Need 256+ vectors for k-means with k=256
         // Test with 10 subvectors (not multiple of 8)
-        let vectors: Vec<Vector> = (0..300)
-            .map(|i| Vector::random(i, 50))
-            .collect();
+        let vectors: Vec<Vector> = (0..300).map(|i| Vector::random(i, 50)).collect();
 
         let pq = ProductQuantizer::train(&vectors, 10);
         let codes = pq.encode(&vectors[0]);
@@ -1055,6 +1179,85 @@ mod tests {
             scalar_dist,
             simd_dist
         );
+    }
+
+    #[test]
+    fn test_batch_distance_matches_individual() {
+        // Test that batch distance computation matches individual computation
+        let vectors: Vec<Vector> = (0..300).map(|i| Vector::random(i, 64)).collect();
+
+        let pq = ProductQuantizer::train(&vectors, 8);
+        let codes = pq.encode(&vectors[0]);
+
+        // Create multiple query tables
+        let queries: Vec<Vec<f32>> = (1..10).map(|i| vectors[i].data.to_vec()).collect();
+        let tables: Vec<Vec<f32>> = queries
+            .iter()
+            .map(|q| pq.build_lookup_table_flat(q))
+            .collect();
+        let table_refs: Vec<&[f32]> = tables.iter().map(|t| t.as_slice()).collect();
+
+        // Compute distances individually using scalar
+        let individual_dists: Vec<f32> = tables
+            .iter()
+            .map(|t| asymmetric_distance_flat_scalar(t, &codes))
+            .collect();
+
+        // Compute distances in batch
+        let batch_dists = batch_asymmetric_distance_dispatch(&table_refs, &codes);
+
+        assert_eq!(individual_dists.len(), batch_dists.len());
+        for (i, (ind, batch)) in individual_dists.iter().zip(batch_dists.iter()).enumerate() {
+            assert!(
+                (ind - batch).abs() < 1e-5,
+                "Query {}: Individual={}, Batch={}",
+                i,
+                ind,
+                batch
+            );
+        }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn test_batch_distance_avx2() {
+        if !is_x86_feature_detected!("avx2") {
+            println!("AVX2 not available, skipping test");
+            return;
+        }
+
+        let vectors: Vec<Vector> = (0..300).map(|i| Vector::random(i, 128)).collect();
+
+        let pq = ProductQuantizer::train(&vectors, 16);
+        let codes = pq.encode(&vectors[0]);
+
+        // Create 8 query tables (enough for AVX2 batch processing)
+        let queries: Vec<Vec<f32>> = (1..9).map(|i| vectors[i].data.to_vec()).collect();
+        let tables: Vec<Vec<f32>> = queries
+            .iter()
+            .map(|q| pq.build_lookup_table_flat(q))
+            .collect();
+        let table_refs: Vec<&[f32]> = tables.iter().map(|t| t.as_slice()).collect();
+
+        // Compute using scalar
+        let scalar_dists: Vec<f32> = tables
+            .iter()
+            .map(|t| asymmetric_distance_flat_scalar(t, &codes))
+            .collect();
+
+        // Compute using batch AVX2
+        let batch_dists = unsafe { batch_asymmetric_distance_avx2(&table_refs, &codes) };
+
+        assert_eq!(scalar_dists.len(), batch_dists.len());
+        for (i, (scalar, batch)) in scalar_dists.iter().zip(batch_dists.iter()).enumerate() {
+            assert!(
+                (scalar - batch).abs() < 1e-4,
+                "Query {}: Scalar={}, Batch={}",
+                i,
+                scalar,
+                batch
+            );
+        }
     }
 
     // =========================================================================
@@ -1076,9 +1279,7 @@ mod tests {
 
     #[test]
     fn test_4bit_pq_encode() {
-        let vectors: Vec<Vector> = (0..100)
-            .map(|i| Vector::random(i, 16))
-            .collect();
+        let vectors: Vec<Vector> = (0..100).map(|i| Vector::random(i, 16)).collect();
 
         let pq = ProductQuantizer4Bit::train(&vectors, 4);
 
@@ -1096,9 +1297,7 @@ mod tests {
 
     #[test]
     fn test_4bit_pq_odd_subvectors() {
-        let vectors: Vec<Vector> = (0..100)
-            .map(|i| Vector::random(i, 15))
-            .collect();
+        let vectors: Vec<Vector> = (0..100).map(|i| Vector::random(i, 15)).collect();
 
         let pq = ProductQuantizer4Bit::train(&vectors, 5);
 
@@ -1109,9 +1308,7 @@ mod tests {
 
     #[test]
     fn test_4bit_distance_computation() {
-        let vectors: Vec<Vector> = (0..100)
-            .map(|i| Vector::random(i, 32))
-            .collect();
+        let vectors: Vec<Vector> = (0..100).map(|i| Vector::random(i, 32)).collect();
 
         let pq = ProductQuantizer4Bit::train(&vectors, 8);
         let query = vectors[0].data.to_vec();
@@ -1138,9 +1335,7 @@ mod tests {
 
     #[test]
     fn test_compressed_vectors_4bit_search() {
-        let vectors: Vec<Vector> = (0..100)
-            .map(|i| Vector::random(i, 32))
-            .collect();
+        let vectors: Vec<Vector> = (0..100).map(|i| Vector::random(i, 32)).collect();
 
         let compressed = CompressedVectors4Bit::new(vectors.clone(), 8);
 
@@ -1163,9 +1358,7 @@ mod tests {
     fn test_4bit_vs_8bit_recall() {
         // This test verifies that 4-bit PQ finds similar results to 8-bit PQ
         // Note: Need at least 256 vectors for 8-bit PQ k-means (256 centroids)
-        let vectors: Vec<Vector> = (0..500)
-            .map(|i| Vector::random(i, 32))
-            .collect();
+        let vectors: Vec<Vector> = (0..500).map(|i| Vector::random(i, 32)).collect();
 
         let compressed_8bit = CompressedVectors::new(vectors.clone(), 8);
         let compressed_4bit = CompressedVectors4Bit::new(vectors.clone(), 8);
@@ -1202,9 +1395,7 @@ mod tests {
     #[test]
     fn test_flat_compressed_vectors_new() {
         // Need 256+ vectors for k-means with k=256
-        let vectors: Vec<Vector> = (0..300)
-            .map(|i| Vector::random(i, 32))
-            .collect();
+        let vectors: Vec<Vector> = (0..300).map(|i| Vector::random(i, 32)).collect();
 
         let compressed = FlatCompressedVectors::new(vectors.clone(), 8);
 
@@ -1216,9 +1407,7 @@ mod tests {
 
     #[test]
     fn test_flat_compressed_vectors_get_codes() {
-        let vectors: Vec<Vector> = (0..300)
-            .map(|i| Vector::random(i, 32))
-            .collect();
+        let vectors: Vec<Vector> = (0..300).map(|i| Vector::random(i, 32)).collect();
 
         let compressed = FlatCompressedVectors::new(vectors.clone(), 8);
 
@@ -1236,9 +1425,7 @@ mod tests {
 
     #[test]
     fn test_flat_compressed_vectors_search() {
-        let vectors: Vec<Vector> = (0..300)
-            .map(|i| Vector::random(i, 32))
-            .collect();
+        let vectors: Vec<Vector> = (0..300).map(|i| Vector::random(i, 32)).collect();
 
         let compressed = FlatCompressedVectors::new(vectors.clone(), 8);
 
@@ -1263,9 +1450,7 @@ mod tests {
 
     #[test]
     fn test_flat_compressed_vectors_search_parallel() {
-        let vectors: Vec<Vector> = (0..300)
-            .map(|i| Vector::random(i, 32))
-            .collect();
+        let vectors: Vec<Vector> = (0..300).map(|i| Vector::random(i, 32)).collect();
 
         let compressed = FlatCompressedVectors::new(vectors.clone(), 8);
 
@@ -1284,9 +1469,7 @@ mod tests {
     #[test]
     fn test_flat_vs_nested_compressed_vectors() {
         // Verify that flat and nested implementations produce same results
-        let vectors: Vec<Vector> = (0..300)
-            .map(|i| Vector::random(i, 32))
-            .collect();
+        let vectors: Vec<Vector> = (0..300).map(|i| Vector::random(i, 32)).collect();
 
         let nested = CompressedVectors::new(vectors.clone(), 8);
         let flat = FlatCompressedVectors::new(vectors.clone(), 8);
@@ -1306,9 +1489,7 @@ mod tests {
 
     #[test]
     fn test_flat_compressed_vectors_from_pq() {
-        let vectors: Vec<Vector> = (0..300)
-            .map(|i| Vector::random(i, 32))
-            .collect();
+        let vectors: Vec<Vector> = (0..300).map(|i| Vector::random(i, 32)).collect();
 
         // Train PQ on all vectors
         let pq = ProductQuantizer::train(&vectors, 8);

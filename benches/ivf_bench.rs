@@ -62,17 +62,13 @@ fn benchmark_ivf_search(c: &mut Criterion) {
 
             let mut query_idx = 0usize;
 
-            group.bench_with_input(
-                BenchmarkId::from_parameter(nprobe),
-                &nprobe,
-                |b, _| {
-                    b.iter(|| {
-                        let query = &dataset.queries[query_idx % dataset.queries.len()];
-                        query_idx += 1;
-                        black_box(index.search(&query.data, 10))
-                    })
-                },
-            );
+            group.bench_with_input(BenchmarkId::from_parameter(nprobe), &nprobe, |b, _| {
+                b.iter(|| {
+                    let query = &dataset.queries[query_idx % dataset.queries.len()];
+                    query_idx += 1;
+                    black_box(index.search(&query.data, 10))
+                })
+            });
         }
 
         group.finish();
@@ -82,11 +78,7 @@ fn benchmark_ivf_search(c: &mut Criterion) {
 /// Benchmark batch search throughput.
 fn benchmark_ivf_batch_search(c: &mut Criterion) {
     let dataset = Dataset::generate(100_000, 100, 128);
-    let mut index = IVFIndex::build(
-        dataset.vectors.clone(),
-        256,
-        DistanceMetric::Euclidean,
-    );
+    let mut index = IVFIndex::build(dataset.vectors.clone(), 256, DistanceMetric::Euclidean);
 
     let mut group = c.benchmark_group("ivf_batch_search");
     group.sample_size(20);
@@ -97,9 +89,7 @@ fn benchmark_ivf_batch_search(c: &mut Criterion) {
         group.bench_with_input(
             BenchmarkId::from_parameter(format!("nprobe_{}_100q", nprobe)),
             &nprobe,
-            |b, _| {
-                b.iter(|| black_box(index.batch_search(&dataset.queries, 10)))
-            },
+            |b, _| b.iter(|| black_box(index.batch_search(&dataset.queries, 10))),
         );
     }
 

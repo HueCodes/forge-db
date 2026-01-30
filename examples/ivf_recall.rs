@@ -2,10 +2,10 @@
 //!
 //! Measures recall@k and queries per second across different configurations.
 
-use std::time::Instant;
 use forge_db::dataset::{recall_at_k, Dataset};
 use forge_db::distance::DistanceMetric;
 use forge_db::index::ivf::IVFIndex;
+use std::time::Instant;
 
 fn main() {
     println!("=== IVF Index Recall Evaluation ===\n");
@@ -32,10 +32,7 @@ fn main() {
         );
 
         println!();
-        println!(
-            "{:>8} | {:>12} | {:>12}",
-            "nprobe", "Recall@10", "QPS"
-        );
+        println!("{:>8} | {:>12} | {:>12}", "nprobe", "Recall@10", "QPS");
         println!("{}", "-".repeat(40));
 
         for nprobe in [1, 4, 16, 32, 64] {
@@ -88,10 +85,7 @@ fn main() {
     );
 
     println!();
-    println!(
-        "{:>8} | {:>12} | {:>12}",
-        "nprobe", "Recall@10", "QPS"
-    );
+    println!("{:>8} | {:>12} | {:>12}", "nprobe", "Recall@10", "QPS");
     println!("{}", "-".repeat(40));
 
     for nprobe in [1, 4, 16, 64, 128] {

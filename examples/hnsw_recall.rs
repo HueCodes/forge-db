@@ -3,10 +3,10 @@
 //! Measures recall@k at various ef_search settings to demonstrate
 //! the speed/recall tradeoff.
 
-use std::time::Instant;
 use forge_db::dataset::{recall_at_k, Dataset};
 use forge_db::distance::DistanceMetric;
 use forge_db::index::hnsw::HNSWIndex;
+use std::time::Instant;
 
 fn main() {
     println!("Generating dataset...");

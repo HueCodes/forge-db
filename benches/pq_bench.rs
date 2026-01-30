@@ -21,12 +21,7 @@ fn benchmark_sift1m(c: &mut Criterion) {
 
     // Build IVF-PQ index: 1024 clusters, 32 subvectors
     println!("Building IVF-PQ index...");
-    let mut index = IVFPQIndex::build(
-        dataset.vectors.clone(),
-        1024,
-        32,
-        DistanceMetric::Euclidean,
-    );
+    let mut index = IVFPQIndex::build(dataset.vectors.clone(), 1024, 32, DistanceMetric::Euclidean);
 
     let queries = &dataset.queries;
 
@@ -38,17 +33,13 @@ fn benchmark_sift1m(c: &mut Criterion) {
         index.set_nprobe(nprobe);
         let mut query_idx = 0;
 
-        group.bench_with_input(
-            BenchmarkId::new("nprobe", nprobe),
-            &nprobe,
-            |b, _| {
-                b.iter(|| {
-                    let query = &queries[query_idx % queries.len()];
-                    query_idx += 1;
-                    black_box(index.search(&query.data, 10))
-                })
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("nprobe", nprobe), &nprobe, |b, _| {
+            b.iter(|| {
+                let query = &queries[query_idx % queries.len()];
+                query_idx += 1;
+                black_box(index.search(&query.data, 10))
+            })
+        });
     }
     group.finish();
 
@@ -63,17 +54,13 @@ fn benchmark_sift1m(c: &mut Criterion) {
         index.set_nprobe(nprobe);
         let mut query_idx = 0;
 
-        group.bench_with_input(
-            BenchmarkId::new("nprobe", nprobe),
-            &nprobe,
-            |b, _| {
-                b.iter(|| {
-                    let query = &queries[query_idx % queries.len()];
-                    query_idx += 1;
-                    black_box(index.search(&query.data, 10))
-                })
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("nprobe", nprobe), &nprobe, |b, _| {
+            b.iter(|| {
+                let query = &queries[query_idx % queries.len()];
+                query_idx += 1;
+                black_box(index.search(&query.data, 10))
+            })
+        });
     }
     group.finish();
 }

@@ -150,7 +150,12 @@ impl VectorStore {
     /// Panics if `index >= self.len`.
     #[inline(always)]
     pub fn get(&self, index: usize) -> (u64, &[f32]) {
-        debug_assert!(index < self.len, "Index {} out of bounds (len={})", index, self.len);
+        debug_assert!(
+            index < self.len,
+            "Index {} out of bounds (len={})",
+            index,
+            self.len
+        );
         let start = index * self.dim;
         // SAFETY: We maintain the invariant that data.len() == len * dim,
         // and index < len is checked by debug_assert above.
@@ -170,7 +175,12 @@ impl VectorStore {
     /// Panics if `index >= self.len`.
     #[inline(always)]
     pub fn get_data(&self, index: usize) -> &[f32] {
-        debug_assert!(index < self.len, "Index {} out of bounds (len={})", index, self.len);
+        debug_assert!(
+            index < self.len,
+            "Index {} out of bounds (len={})",
+            index,
+            self.len
+        );
         let start = index * self.dim;
         // SAFETY: We maintain the invariant that data.len() == len * dim,
         // and index < len is checked by debug_assert above.
@@ -183,7 +193,12 @@ impl VectorStore {
     /// Panics if `index >= self.len`.
     #[inline(always)]
     pub fn get_id(&self, index: usize) -> u64 {
-        debug_assert!(index < self.len, "Index {} out of bounds (len={})", index, self.len);
+        debug_assert!(
+            index < self.len,
+            "Index {} out of bounds (len={})",
+            index,
+            self.len
+        );
         // SAFETY: index < len is checked by debug_assert above.
         unsafe { *self.ids.get_unchecked(index) }
     }
@@ -265,7 +280,7 @@ impl<'a> Iterator for VectorStoreIter<'a> {
     }
 }
 
-impl<'a> ExactSizeIterator for VectorStoreIter<'a> {}
+impl ExactSizeIterator for VectorStoreIter<'_> {}
 
 impl From<Vec<Vector>> for VectorStore {
     /// Convert a Vec<Vector> into contiguous VectorStore layout.

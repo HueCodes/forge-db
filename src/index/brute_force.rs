@@ -99,10 +99,8 @@ impl BruteForceIndex {
             }
         }
 
-        let mut results: Vec<(u64, f32)> = heap
-            .into_iter()
-            .map(|sv| (sv.id, sv.distance))
-            .collect();
+        let mut results: Vec<(u64, f32)> =
+            heap.into_iter().map(|sv| (sv.id, sv.distance)).collect();
         results.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(Ordering::Equal));
         results
     }
@@ -119,10 +117,7 @@ impl BruteForceIndex {
             #[cfg(target_arch = "x86_64")]
             if i + 1 < self.vectors.len() {
                 unsafe {
-                    _mm_prefetch(
-                        self.vectors[i + 1].data.as_ptr() as *const i8,
-                        _MM_HINT_T0,
-                    );
+                    _mm_prefetch(self.vectors[i + 1].data.as_ptr() as *const i8, _MM_HINT_T0);
                 }
             }
 
@@ -143,10 +138,8 @@ impl BruteForceIndex {
             }
         }
 
-        let mut results: Vec<(u64, f32)> = heap
-            .into_iter()
-            .map(|sv| (sv.id, sv.distance))
-            .collect();
+        let mut results: Vec<(u64, f32)> =
+            heap.into_iter().map(|sv| (sv.id, sv.distance)).collect();
         results.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(Ordering::Equal));
         results
     }
