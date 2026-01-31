@@ -41,8 +41,10 @@ fn test_simd_squared_matches_scalar() {
         let simd_result = simd::euclidean_distance_squared(&v1.data, &v2.data);
         let diff = (scalar_result - simd_result).abs();
 
+        // Use relative tolerance for larger values
+        let tol = scalar_result.abs() * 1e-5 + 1e-5;
         assert!(
-            diff < 1e-5,
+            diff < tol,
             "Squared Euclidean mismatch at dim {}: scalar={}, simd={}, diff={}",
             dim,
             scalar_result,
@@ -158,7 +160,11 @@ fn test_unit_vectors() {
 
     // Dot product of orthogonal unit vectors should be 0
     let dot = simd::dot_product(&e1, &e2);
-    assert!(dot.abs() < 1e-6, "Orthogonal vectors should have dot product 0, got {}", dot);
+    assert!(
+        dot.abs() < 1e-6,
+        "Orthogonal vectors should have dot product 0, got {}",
+        dot
+    );
 
     // Euclidean distance between orthogonal unit vectors should be sqrt(2)
     let dist = simd::euclidean_distance(&e1, &e2);

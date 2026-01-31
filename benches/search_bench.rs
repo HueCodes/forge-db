@@ -120,9 +120,11 @@ fn benchmark_distance_metrics(c: &mut Criterion) {
             index.add(vector.clone());
         }
 
-        group.bench_with_input(BenchmarkId::new("metric", format!("{:?}", metric)), &index, |b, idx| {
-            b.iter(|| idx.search(black_box(&query.data), black_box(10)))
-        });
+        group.bench_with_input(
+            BenchmarkId::new("metric", format!("{:?}", metric)),
+            &index,
+            |b, idx| b.iter(|| idx.search(black_box(&query.data), black_box(10))),
+        );
     }
 
     group.finish();

@@ -7,7 +7,7 @@ pub mod scalar;
 pub mod simd;
 
 // Re-export the auto-dispatching functions as the primary API
-pub use simd::{dot_product, euclidean_distance, euclidean_distance_squared};
+pub use simd::{dot_product, euclidean_distance, euclidean_distance_squared, manhattan_distance};
 
 /// Supported distance metrics for similarity search.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -23,6 +23,9 @@ pub enum DistanceMetric {
     /// Negative dot product: -dot(a, b)
     /// Negated for min-heap compatibility (larger dot = smaller distance).
     DotProduct,
+    /// Manhattan (L1) distance: sum(|a[i] - b[i]|)
+    /// Also known as taxicab distance or city block distance.
+    Manhattan,
 }
 
 impl DistanceMetric {
@@ -37,6 +40,7 @@ impl DistanceMetric {
             DistanceMetric::EuclideanSquared => euclidean_distance_squared(a, b),
             DistanceMetric::Cosine => scalar::cosine_distance(a, b),
             DistanceMetric::DotProduct => -dot_product(a, b), // Negative for min-heap
+            DistanceMetric::Manhattan => manhattan_distance(a, b),
         }
     }
 }
@@ -60,5 +64,13 @@ mod tests {
         // dot product is 1.0, so distance should be -1.0
         let dist = DistanceMetric::DotProduct.compute(&a, &b);
         assert!((dist - (-1.0)).abs() < 1e-5);
+    }
+
+    #[test]
+    fn test_distance_metric_manhattan() {
+        let a = vec![0.0, 0.0];
+        let b = vec![3.0, 4.0];
+        let dist = DistanceMetric::Manhattan.compute(&a, &b);
+        assert!((dist - 7.0).abs() < 1e-5);
     }
 }

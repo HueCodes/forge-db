@@ -43,19 +43,17 @@ fn main() {
 
     println!("Recall@10: {:.2}%", avg_recall * 100.0);
     println!("QPS: {:.0}", qps);
-    println!("Latency: {:.2} ms/query\n", duration.as_millis() as f64 / dataset.queries.len() as f64);
+    println!(
+        "Latency: {:.2} ms/query\n",
+        duration.as_millis() as f64 / dataset.queries.len() as f64
+    );
 
     // =====================
     // IVF-PQ
     // =====================
     println!("=== IVF-PQ (partitioned compressed search) ===");
 
-    let mut index = IVFPQIndex::build(
-        dataset.vectors.clone(),
-        256,
-        8,
-        DistanceMetric::Euclidean,
-    );
+    let mut index = IVFPQIndex::build(dataset.vectors.clone(), 256, 8, DistanceMetric::Euclidean);
 
     println!("\n{:>8} | {:>12} | {:>10}", "nprobe", "Recall@10", "QPS");
     println!("{}", "-".repeat(38));
@@ -77,7 +75,12 @@ fn main() {
         let avg_recall = total_recall / dataset.queries.len() as f32;
         let qps = dataset.queries.len() as f64 / duration.as_secs_f64();
 
-        println!("{:>8} | {:>11.2}% | {:>10.0}", nprobe, avg_recall * 100.0, qps);
+        println!(
+            "{:>8} | {:>11.2}% | {:>10.0}",
+            nprobe,
+            avg_recall * 100.0,
+            qps
+        );
     }
 
     println!("\n=== Memory Comparison ===");
@@ -90,5 +93,8 @@ fn main() {
 
     println!("Uncompressed: {} MB", uncompressed_bytes / (1024 * 1024));
     println!("Compressed:   {} MB", compressed_bytes / (1024 * 1024));
-    println!("Compression:  {:.1}x", uncompressed_bytes as f64 / compressed_bytes as f64);
+    println!(
+        "Compression:  {:.1}x",
+        uncompressed_bytes as f64 / compressed_bytes as f64
+    );
 }

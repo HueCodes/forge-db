@@ -51,8 +51,14 @@ fn main() {
     println!("═══════════════════════════════════════════════════════════════");
     println!("                      MEMORY COMPARISON");
     println!("═══════════════════════════════════════════════════════════════");
-    println!("  Uncompressed: {:>8.1} MB  (128 × f32 per vector)", uncompressed_mb);
-    println!("  Compressed:   {:>8.1} MB  ({} bytes per vector)", compressed_mb, n_subvectors);
+    println!(
+        "  Uncompressed: {:>8.1} MB  (128 × f32 per vector)",
+        uncompressed_mb
+    );
+    println!(
+        "  Compressed:   {:>8.1} MB  ({} bytes per vector)",
+        compressed_mb, n_subvectors
+    );
     println!("  Compression:  {:>8.1}x", uncompressed_mb / compressed_mb);
     println!();
 
@@ -84,7 +90,10 @@ fn main() {
 
     println!("  Recall@{}: {:>6.2}%", k, avg_recall * 100.0);
     println!("  QPS:       {:>6.0}", qps);
-    println!("  Latency:   {:>6.2} ms/query", duration.as_millis() as f64 / n_queries as f64);
+    println!(
+        "  Latency:   {:>6.2} ms/query",
+        duration.as_millis() as f64 / n_queries as f64
+    );
     println!();
 
     // =====================================================================
@@ -95,7 +104,10 @@ fn main() {
     println!("═══════════════════════════════════════════════════════════════");
 
     let n_clusters = 1024; // Optimal balance: fast centroid search + small partitions
-    println!("Building IVF-PQ index ({} clusters, {} subvectors)...", n_clusters, n_subvectors);
+    println!(
+        "Building IVF-PQ index ({} clusters, {} subvectors)...",
+        n_clusters, n_subvectors
+    );
     let start = Instant::now();
     let mut index = IVFPQIndex::build(
         dataset.vectors.clone(),
@@ -105,7 +117,10 @@ fn main() {
     );
     println!("Build time: {:.2}s\n", start.elapsed().as_secs_f64());
 
-    println!("{:>8} │ {:>10} │ {:>12} │ {:>10}", "nprobe", "Recall@10", "QPS", "Latency");
+    println!(
+        "{:>8} │ {:>10} │ {:>12} │ {:>10}",
+        "nprobe", "Recall@10", "QPS", "Latency"
+    );
     println!("─────────┼────────────┼──────────────┼───────────");
 
     for nprobe in [1, 2, 4, 8, 16, 32, 64, 128] {
@@ -145,7 +160,10 @@ fn main() {
 
     index.enable_reranking(dataset.vectors.clone(), 4);
 
-    println!("{:>8} │ {:>10} │ {:>12} │ {:>10}", "nprobe", "Recall@10", "QPS", "Latency");
+    println!(
+        "{:>8} │ {:>10} │ {:>12} │ {:>10}",
+        "nprobe", "Recall@10", "QPS", "Latency"
+    );
     println!("─────────┼────────────┼──────────────┼───────────");
 
     for nprobe in [1, 2, 4, 8, 16, 32] {
@@ -178,7 +196,12 @@ fn main() {
 
     println!("\n[SUMMARY]");
     println!("  Dataset:     SIFT1M (1M vectors, 128 dims)");
-    println!("  Compression: {:.0}x ({:.0}MB to {:.0}MB)", uncompressed_mb / compressed_mb, uncompressed_mb, compressed_mb);
+    println!(
+        "  Compression: {:.0}x ({:.0}MB to {:.0}MB)",
+        uncompressed_mb / compressed_mb,
+        uncompressed_mb,
+        compressed_mb
+    );
     println!("  Pure Rust implementation");
     println!();
 }

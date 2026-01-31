@@ -403,7 +403,8 @@ impl HNSWIndex {
     /// Compute distance between two nodes.
     #[inline(always)]
     fn distance_nodes(&self, node_a: NodeIndex, node_b: NodeIndex) -> f32 {
-        self.metric.compute(self.get_vector_data(node_a), self.get_vector_data(node_b))
+        self.metric
+            .compute(self.get_vector_data(node_a), self.get_vector_data(node_b))
     }
 
     /// Compute distance from query to a node.
@@ -429,7 +430,13 @@ impl HNSWIndex {
         }
     }
 
-    fn search_layer_build(&self, query_node: NodeIndex, entry_points: &[NodeIndex], ef: usize, layer: usize) -> Vec<NodeIndex> {
+    fn search_layer_build(
+        &self,
+        query_node: NodeIndex,
+        entry_points: &[NodeIndex],
+        ef: usize,
+        layer: usize,
+    ) -> Vec<NodeIndex> {
         let query = self.get_vector_data(query_node);
 
         let mut visited = vec![false; self.graph.len()];
@@ -440,8 +447,14 @@ impl HNSWIndex {
             if !visited[ep] {
                 visited[ep] = true;
                 let dist = self.metric.compute(query, self.get_vector_data(ep));
-                candidates.push(Reverse(ScoredNode { id: ep, distance: dist }));
-                results.push(ScoredNode { id: ep, distance: dist });
+                candidates.push(Reverse(ScoredNode {
+                    id: ep,
+                    distance: dist,
+                }));
+                results.push(ScoredNode {
+                    id: ep,
+                    distance: dist,
+                });
             }
         }
 
@@ -464,12 +477,20 @@ impl HNSWIndex {
                 let neighbor_idx = neighbor as NodeIndex;
                 if !visited[neighbor_idx] {
                     visited[neighbor_idx] = true;
-                    let neighbor_dist = self.metric.compute(query, self.get_vector_data(neighbor_idx));
+                    let neighbor_dist = self
+                        .metric
+                        .compute(query, self.get_vector_data(neighbor_idx));
                     let worst_dist = results.peek().map(|n| n.distance).unwrap_or(f32::MAX);
 
                     if neighbor_dist < worst_dist || results.len() < ef {
-                        candidates.push(Reverse(ScoredNode { id: neighbor_idx, distance: neighbor_dist }));
-                        results.push(ScoredNode { id: neighbor_idx, distance: neighbor_dist });
+                        candidates.push(Reverse(ScoredNode {
+                            id: neighbor_idx,
+                            distance: neighbor_dist,
+                        }));
+                        results.push(ScoredNode {
+                            id: neighbor_idx,
+                            distance: neighbor_dist,
+                        });
                         if results.len() > ef {
                             results.pop();
                         }
@@ -481,7 +502,12 @@ impl HNSWIndex {
         results.into_iter().map(|sn| sn.id).collect()
     }
 
-    fn select_neighbors_sorted(&self, query_node: NodeIndex, candidates: &[NodeIndex], m: usize) -> Vec<NodeId> {
+    fn select_neighbors_sorted(
+        &self,
+        query_node: NodeIndex,
+        candidates: &[NodeIndex],
+        m: usize,
+    ) -> Vec<NodeId> {
         let mut scored: Vec<(NodeId, f32)> = candidates
             .iter()
             .map(|&id| (id as NodeId, self.distance_nodes(query_node, id)))
@@ -509,7 +535,12 @@ impl HNSWIndex {
 
         let mut scored: Vec<(NodeId, f32)> = neighbors
             .into_iter()
-            .map(|neighbor_id| (neighbor_id, self.distance_nodes(node_id, neighbor_id as NodeIndex)))
+            .map(|neighbor_id| {
+                (
+                    neighbor_id,
+                    self.distance_nodes(node_id, neighbor_id as NodeIndex),
+                )
+            })
             .collect();
         scored.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(Ordering::Equal));
         scored.truncate(m);
@@ -645,8 +676,14 @@ impl HNSWIndex {
         let mut results: BinaryHeap<ScoredNode> = BinaryHeap::with_capacity(ef + 1);
 
         visited[ep_id] = true;
-        candidates.push(Reverse(ScoredNode { id: ep_id, distance: ep_dist }));
-        results.push(ScoredNode { id: ep_id, distance: ep_dist });
+        candidates.push(Reverse(ScoredNode {
+            id: ep_id,
+            distance: ep_dist,
+        }));
+        results.push(ScoredNode {
+            id: ep_id,
+            distance: ep_dist,
+        });
 
         while let Some(Reverse(current)) = candidates.pop() {
             let worst_dist = results.peek().map(|n| n.distance).unwrap_or(f32::MAX);
@@ -668,8 +705,14 @@ impl HNSWIndex {
                     let worst_dist = results.peek().map(|n| n.distance).unwrap_or(f32::MAX);
 
                     if neighbor_dist < worst_dist || results.len() < ef {
-                        candidates.push(Reverse(ScoredNode { id: neighbor_idx, distance: neighbor_dist }));
-                        results.push(ScoredNode { id: neighbor_idx, distance: neighbor_dist });
+                        candidates.push(Reverse(ScoredNode {
+                            id: neighbor_idx,
+                            distance: neighbor_dist,
+                        }));
+                        results.push(ScoredNode {
+                            id: neighbor_idx,
+                            distance: neighbor_dist,
+                        });
                         if results.len() > ef {
                             results.pop();
                         }
@@ -702,14 +745,25 @@ impl HNSWIndex {
 
         let mut results: Vec<(u64, f32)> = candidates
             .into_iter()
-            .map(|node_id| (self.vector_ids[node_id], self.distance_query(query, node_id)))
+            .map(|node_id| {
+                (
+                    self.vector_ids[node_id],
+                    self.distance_query(query, node_id),
+                )
+            })
             .collect();
         results.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(Ordering::Equal));
         results.truncate(k);
         results
     }
 
-    fn search_layer_build_query(&self, query: &[f32], entry_points: &[NodeIndex], ef: usize, layer: usize) -> Vec<NodeIndex> {
+    fn search_layer_build_query(
+        &self,
+        query: &[f32],
+        entry_points: &[NodeIndex],
+        ef: usize,
+        layer: usize,
+    ) -> Vec<NodeIndex> {
         let mut visited = vec![false; self.graph.len()];
         let mut candidates: BinaryHeap<Reverse<ScoredNode>> = BinaryHeap::with_capacity(ef);
         let mut results: BinaryHeap<ScoredNode> = BinaryHeap::with_capacity(ef + 1);
@@ -718,8 +772,14 @@ impl HNSWIndex {
             if !visited[ep] {
                 visited[ep] = true;
                 let dist = self.distance_query(query, ep);
-                candidates.push(Reverse(ScoredNode { id: ep, distance: dist }));
-                results.push(ScoredNode { id: ep, distance: dist });
+                candidates.push(Reverse(ScoredNode {
+                    id: ep,
+                    distance: dist,
+                }));
+                results.push(ScoredNode {
+                    id: ep,
+                    distance: dist,
+                });
             }
         }
 
@@ -746,8 +806,14 @@ impl HNSWIndex {
                     let worst_dist = results.peek().map(|n| n.distance).unwrap_or(f32::MAX);
 
                     if neighbor_dist < worst_dist || results.len() < ef {
-                        candidates.push(Reverse(ScoredNode { id: neighbor_idx, distance: neighbor_dist }));
-                        results.push(ScoredNode { id: neighbor_idx, distance: neighbor_dist });
+                        candidates.push(Reverse(ScoredNode {
+                            id: neighbor_idx,
+                            distance: neighbor_dist,
+                        }));
+                        results.push(ScoredNode {
+                            id: neighbor_idx,
+                            distance: neighbor_dist,
+                        });
                         if results.len() > ef {
                             results.pop();
                         }
@@ -882,6 +948,9 @@ mod tests {
     fn test_node_id_fits_in_u32() {
         // Verify that our u32 NodeId type is sufficient
         let max_nodes: u32 = u32::MAX;
-        assert!(max_nodes > 4_000_000_000, "u32 should support 4+ billion nodes");
+        assert!(
+            max_nodes > 4_000_000_000,
+            "u32 should support 4+ billion nodes"
+        );
     }
 }
