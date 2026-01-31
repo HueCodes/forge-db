@@ -420,7 +420,7 @@ impl IVFPQIndex {
             pq,
             partitions,
             nprobe: AtomicUsize::new(1),
-            metric,
+            _metric: metric,
             original_vectors: None,
             rerank_factor: 1,
         }
@@ -1785,7 +1785,7 @@ impl IVFPQIndex {
 
         let n_clusters = self.centroids.len();
         let n_subvectors = self.pq.n_subvectors;
-        let metric = self.metric;
+        let metric = self._metric;
         let nprobe = self.nprobe();
         let rerank_factor = self.rerank_factor;
 
@@ -1808,7 +1808,7 @@ impl IVFPQIndex {
                 .map(|p| SerializablePartition::from(&*p.read().unwrap()))
                 .collect(),
             nprobe: self.nprobe(),
-            metric: SerializableMetric::from(self.metric),
+            metric: SerializableMetric::from(self._metric),
             original_vectors: self.original_vectors.as_ref().map(|vecs| {
                 vecs.read()
                     .unwrap()
@@ -1842,7 +1842,7 @@ impl IVFPQIndex {
                 .map(|p| RwLock::new(PartitionData::from(p)))
                 .collect(),
             nprobe: AtomicUsize::new(s.nprobe),
-            metric: DistanceMetric::from(s.metric),
+            _metric: DistanceMetric::from(s.metric),
             original_vectors,
             rerank_factor: s.rerank_factor,
         }

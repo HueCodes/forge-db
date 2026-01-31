@@ -26,6 +26,7 @@ use std::arch::x86_64::*;
 #[cfg(target_arch = "aarch64")]
 use std::arch::aarch64::*;
 
+// Used in tests and x86_64 scalar fallbacks
 #[allow(unused_imports)]
 use super::scalar;
 
@@ -559,7 +560,7 @@ pub fn euclidean_distance(a: &[f32], b: &[f32]) -> f32 {
     #[cfg(target_arch = "aarch64")]
     {
         // NEON is always available on aarch64
-        return euclidean_distance_neon(a, b);
+        euclidean_distance_neon(a, b)
     }
 
     #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
@@ -594,7 +595,7 @@ pub fn euclidean_distance_squared(a: &[f32], b: &[f32]) -> f32 {
     #[cfg(target_arch = "aarch64")]
     {
         // NEON is always available on aarch64
-        return euclidean_distance_squared_neon(a, b);
+        euclidean_distance_squared_neon(a, b)
     }
 
     #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
@@ -629,7 +630,7 @@ pub fn dot_product(a: &[f32], b: &[f32]) -> f32 {
     #[cfg(target_arch = "aarch64")]
     {
         // NEON is always available on aarch64
-        return dot_product_neon(a, b);
+        dot_product_neon(a, b)
     }
 
     #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
@@ -667,7 +668,7 @@ pub fn manhattan_distance(a: &[f32], b: &[f32]) -> f32 {
     #[cfg(target_arch = "aarch64")]
     {
         // NEON is always available on aarch64
-        return manhattan_distance_neon(a, b);
+        manhattan_distance_neon(a, b)
     }
 
     #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
