@@ -2,6 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
+use std::hash::{Hash, Hasher};
 
 /// A metadata value that can be attached to a vector.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -18,6 +19,33 @@ pub enum MetadataValue {
     Array(Vec<MetadataValue>),
     /// Null/missing value.
     Null,
+}
+
+impl Eq for MetadataValue {}
+
+impl Hash for MetadataValue {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        // Hash discriminant first to distinguish types
+        std::mem::discriminant(self).hash(state);
+
+        match self {
+            MetadataValue::String(s) => s.hash(state),
+            MetadataValue::Integer(i) => i.hash(state),
+            MetadataValue::Float(f) => {
+                // Use bit representation for consistent hashing
+                // NaN values will all hash the same, which is fine
+                f.to_bits().hash(state);
+            }
+            MetadataValue::Boolean(b) => b.hash(state),
+            MetadataValue::Array(arr) => {
+                arr.len().hash(state);
+                for item in arr {
+                    item.hash(state);
+                }
+            }
+            MetadataValue::Null => {}
+        }
+    }
 }
 
 impl MetadataValue {

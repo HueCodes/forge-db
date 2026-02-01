@@ -282,7 +282,7 @@ impl IVFPQIndexBuilder {
         if !self.auto_tune {
             // Default: dim / 4, must divide evenly
             let m = dim / 4;
-            if dim % m != 0 {
+            if !dim.is_multiple_of(m) {
                 return Err(ForgeDbError::invalid_parameter(format!(
                     "default num_subvectors {} does not divide dimension {}",
                     m, dim
@@ -296,7 +296,7 @@ impl IVFPQIndexBuilder {
 
         // Find largest divisor of dim that's <= target_m
         for m in (1..=target_m).rev() {
-            if dim % m == 0 {
+            if dim.is_multiple_of(m) {
                 return Ok(m);
             }
         }

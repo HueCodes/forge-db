@@ -4,6 +4,7 @@
 //! high-quality centroid placement. Used to partition vectors into
 //! clusters for inverted file indexing.
 
+use crate::constants::kmeans::{CONVERGENCE_THRESHOLD, KMEANSPP_THRESHOLD};
 use crate::distance::euclidean_distance_squared;
 use crate::vector::Vector;
 use rand::seq::SliceRandom;
@@ -49,7 +50,7 @@ impl KMeans {
         let dim = vectors[0].dim();
 
         // Initialize centroids: random for large k (k-means++ is O(k²n), too slow)
-        self.centroids = if self.k > 64 {
+        self.centroids = if self.k > KMEANSPP_THRESHOLD {
             let mut rng = rand::thread_rng();
             let mut indices: Vec<usize> = (0..vectors.len()).collect();
             indices.shuffle(&mut rng);
@@ -70,7 +71,7 @@ impl KMeans {
 
             self.centroids = new_centroids;
 
-            if change < 0.001 {
+            if change < CONVERGENCE_THRESHOLD {
                 break;
             }
         }

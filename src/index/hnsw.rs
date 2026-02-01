@@ -24,6 +24,9 @@
 //! - At each layer, beam search finds the best entry points for the next layer
 
 use crate::distance::DistanceMetric;
+use crate::error::{ForgeDbError, Result};
+use crate::index::traits::{FinalizableIndex, MutableVectorIndex, SearchResult, VectorIndex};
+use crate::types::VectorId;
 use crate::vector::Vector;
 use parking_lot::RwLock;
 use smallvec::SmallVec;
@@ -59,13 +62,15 @@ impl Eq for ScoredNode {}
 
 impl PartialOrd for ScoredNode {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        self.distance.partial_cmp(&other.distance)
+        Some(self.cmp(other))
     }
 }
 
 impl Ord for ScoredNode {
     fn cmp(&self, other: &Self) -> Ordering {
-        self.partial_cmp(other).unwrap_or(Ordering::Equal)
+        self.distance
+            .partial_cmp(&other.distance)
+            .unwrap_or(Ordering::Equal)
     }
 }
 
@@ -661,6 +666,7 @@ impl HNSWIndex {
     /// - Prefetching (hide memory latency)
     /// - Minimal branching
     #[inline(always)]
+    #[allow(clippy::too_many_arguments)]
     fn beam_search_layer0(
         &self,
         query: &[f32],
@@ -833,6 +839,70 @@ impl HNSWIndex {
     /// Returns true if the index contains no vectors.
     pub fn is_empty(&self) -> bool {
         self.vector_ids.is_empty()
+    }
+
+    /// Returns the dimensionality of vectors in this index.
+    pub fn dimension(&self) -> usize {
+        self.dim
+    }
+
+    /// Returns true if the index has been finalized.
+    pub fn is_finalized(&self) -> bool {
+        self.finalized
+    }
+}
+
+// =============================================================================
+// Trait Implementations
+// =============================================================================
+
+impl VectorIndex for HNSWIndex {
+    fn search(&self, query: &[f32], k: usize) -> Vec<SearchResult> {
+        self.search(query, k)
+            .into_iter()
+            .map(SearchResult::from)
+            .collect()
+    }
+
+    fn len(&self) -> usize {
+        self.len()
+    }
+
+    fn is_empty(&self) -> bool {
+        self.is_empty()
+    }
+
+    fn dimension(&self) -> usize {
+        self.dimension()
+    }
+}
+
+impl MutableVectorIndex for HNSWIndex {
+    fn add(&mut self, id: VectorId, data: &[f32]) -> Result<()> {
+        // Check dimension consistency
+        if self.dim > 0 && data.len() != self.dim {
+            return Err(ForgeDbError::dimension_mismatch(self.dim, data.len()));
+        }
+
+        self.add(Vector::new(id.0, data.to_vec()));
+        Ok(())
+    }
+
+    fn remove(&mut self, _id: VectorId) -> Result<bool> {
+        // HNSW doesn't support removal in this implementation
+        Err(ForgeDbError::not_supported(
+            "HNSW index does not support vector removal",
+        ))
+    }
+}
+
+impl FinalizableIndex for HNSWIndex {
+    fn finalize(&mut self) {
+        self.finalize()
+    }
+
+    fn is_finalized(&self) -> bool {
+        self.is_finalized()
     }
 }
 

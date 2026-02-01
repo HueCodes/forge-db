@@ -64,6 +64,7 @@
 //! - [`persistence`]: Save/load indexes to disk
 //! - [`metrics`]: Index statistics and health monitoring
 
+pub mod constants;
 pub mod dataset;
 pub mod distance;
 pub mod error;
@@ -73,6 +74,7 @@ pub mod metadata;
 pub mod metrics;
 pub mod persistence;
 pub mod pq;
+pub mod types;
 pub mod vector;
 
 // Re-export commonly used types at crate root
@@ -85,4 +87,5 @@ pub use metrics::{HealthStatus, IndexStatistics, ResourceLimits, SearchStatistic
 pub use pq::{CompressedVectors, FlatCompressedVectors, ProductQuantizer};
 pub use metadata::{FilterCondition, MetadataStore, MetadataValue, VectorWithMetadata};
 pub use persistence::Persistable;
+pub use types::{Dimension, NumClusters, NumSubvectors, VectorId};
 pub use vector::{AlignedVector, Vector, VectorStore};

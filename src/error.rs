@@ -106,6 +106,33 @@ pub enum ForgeDbError {
         /// Maximum vector count allowed.
         limit: usize,
     },
+
+    /// Vector dimension is not divisible by the required divisor.
+    #[error("dimension {dim} not divisible by {divisor}")]
+    DimensionNotDivisible {
+        /// The vector dimension.
+        dim: usize,
+        /// The required divisor.
+        divisor: usize,
+    },
+
+    /// Cannot train on empty vector set.
+    #[error("cannot train on empty vector set")]
+    EmptyTrainingSet,
+
+    /// K-means did not converge within the iteration limit.
+    #[error("k-means did not converge after {iterations} iterations")]
+    ConvergenceFailure {
+        /// Number of iterations attempted.
+        iterations: usize,
+    },
+
+    /// Metadata index is stale and needs rebuilding.
+    #[error("metadata index stale, rebuild required for field '{field}'")]
+    StaleIndex {
+        /// The field with the stale index.
+        field: String,
+    },
 }
 
 impl ForgeDbError {
@@ -152,6 +179,23 @@ impl ForgeDbError {
     /// Creates a new `VectorLimitExceeded` error.
     pub fn vector_limit_exceeded(attempted: usize, limit: usize) -> Self {
         Self::VectorLimitExceeded { attempted, limit }
+    }
+
+    /// Creates a new `DimensionNotDivisible` error.
+    pub fn dimension_not_divisible(dim: usize, divisor: usize) -> Self {
+        Self::DimensionNotDivisible { dim, divisor }
+    }
+
+    /// Creates a new `ConvergenceFailure` error.
+    pub fn convergence_failure(iterations: usize) -> Self {
+        Self::ConvergenceFailure { iterations }
+    }
+
+    /// Creates a new `StaleIndex` error.
+    pub fn stale_index(field: impl Into<String>) -> Self {
+        Self::StaleIndex {
+            field: field.into(),
+        }
     }
 }
 

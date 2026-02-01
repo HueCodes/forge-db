@@ -3,7 +3,7 @@
 use super::filter::FilterCondition;
 use super::value::MetadataValue;
 use roaring::RoaringBitmap;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// Storage for vector metadata with optional bitmap indices.
 ///
@@ -14,9 +14,9 @@ pub struct MetadataStore {
     data: HashMap<u64, HashMap<String, MetadataValue>>,
 
     /// Bitmap indices for indexed fields.
-    /// Structure: field_name -> (value_hash -> bitmap of matching IDs)
+    /// Structure: field_name -> (value -> bitmap of matching IDs)
     /// Only stores exact-match indices for string and integer fields.
-    indices: HashMap<String, HashMap<u64, RoaringBitmap>>,
+    indices: HashMap<String, HashMap<MetadataValue, RoaringBitmap>>,
 
     /// Fields that have been indexed.
     indexed_fields: Vec<String>,
@@ -25,6 +25,10 @@ pub struct MetadataStore {
     /// Bitmaps use u32 indices, so we map u64 vector IDs to u32 positions.
     id_to_index: HashMap<u64, u32>,
     index_to_id: Vec<u64>,
+
+    /// Fields whose indices have been invalidated by removals or updates.
+    /// These indices must be rebuilt before they can be used for filtering.
+    dirty_indices: HashSet<String>,
 }
 
 impl Default for MetadataStore {
@@ -42,6 +46,7 @@ impl MetadataStore {
             indexed_fields: Vec::new(),
             id_to_index: HashMap::new(),
             index_to_id: Vec::new(),
+            dirty_indices: HashSet::new(),
         }
     }
 
@@ -53,6 +58,7 @@ impl MetadataStore {
             indexed_fields: Vec::new(),
             id_to_index: HashMap::with_capacity(capacity),
             index_to_id: Vec::with_capacity(capacity),
+            dirty_indices: HashSet::new(),
         }
     }
 
@@ -102,10 +108,44 @@ impl MetadataStore {
     }
 
     /// Remove metadata for a vector.
+    ///
+    /// This invalidates all bitmap indices. After removing vectors, you should call
+    /// [`rebuild_dirty_indices`] before using filtered searches, or check [`needs_rebuild`]
+    /// to see if any indices need rebuilding.
     pub fn remove(&mut self, vector_id: u64) -> Option<HashMap<String, MetadataValue>> {
-        // Note: We don't remove from id_to_index/index_to_id to avoid invalidating bitmaps.
-        // The indices will need to be rebuilt after removals.
+        // Mark all indexed fields as dirty since the bitmaps are now stale
+        for field in &self.indexed_fields {
+            self.dirty_indices.insert(field.clone());
+        }
         self.data.remove(&vector_id)
+    }
+
+    /// Check if any indices need to be rebuilt.
+    ///
+    /// Returns true if any indexed field has been invalidated by a remove operation.
+    pub fn needs_rebuild(&self) -> bool {
+        !self.dirty_indices.is_empty()
+    }
+
+    /// Get the list of fields that need their indices rebuilt.
+    pub fn dirty_fields(&self) -> Vec<&str> {
+        self.dirty_indices.iter().map(|s| s.as_str()).collect()
+    }
+
+    /// Rebuild all dirty indices.
+    ///
+    /// This should be called after removing vectors to ensure filtered searches
+    /// return accurate results.
+    pub fn rebuild_dirty_indices(&mut self) {
+        let dirty: Vec<String> = self.dirty_indices.drain().collect();
+        for field in dirty {
+            self.build_index(&field);
+        }
+    }
+
+    /// Check if a specific field's index is stale.
+    pub fn is_index_stale(&self, field: &str) -> bool {
+        self.dirty_indices.contains(field)
     }
 
     /// Build or rebuild the bitmap index for a field.
@@ -113,21 +153,23 @@ impl MetadataStore {
     /// This creates a bitmap index that maps field values to the set of vector IDs
     /// that have that value. Only works well for low-cardinality fields (< 10,000 unique values).
     pub fn build_index(&mut self, field: &str) {
-        let mut value_map: HashMap<u64, RoaringBitmap> = HashMap::new();
+        let mut value_map: HashMap<MetadataValue, RoaringBitmap> = HashMap::new();
 
         for (&vector_id, metadata) in &self.data {
             if let Some(value) = metadata.get(field) {
-                let value_hash = hash_value(value);
                 let bitmap_idx = self.id_to_index[&vector_id];
 
                 value_map
-                    .entry(value_hash)
+                    .entry(value.clone())
                     .or_default()
                     .insert(bitmap_idx);
             }
         }
 
         self.indices.insert(field.to_string(), value_map);
+
+        // Remove from dirty set since we just rebuilt
+        self.dirty_indices.remove(field);
 
         if !self.indexed_fields.contains(&field.to_string()) {
             self.indexed_fields.push(field.to_string());
@@ -166,22 +208,30 @@ impl MetadataStore {
     }
 
     /// Filter using bitmap index if possible.
+    ///
+    /// Returns `None` if the index cannot be used (field not indexed or index is stale).
     fn filter_with_index(&self, condition: &FilterCondition) -> Option<RoaringBitmap> {
         match condition {
             FilterCondition::Equals { field, value } => {
+                // Don't use stale indices
+                if self.dirty_indices.contains(field) {
+                    return None;
+                }
                 if let Some(field_index) = self.indices.get(field) {
-                    let value_hash = hash_value(value);
-                    return Some(field_index.get(&value_hash).cloned().unwrap_or_default());
+                    return Some(field_index.get(value).cloned().unwrap_or_default());
                 }
                 None
             }
 
             FilterCondition::In { field, values } => {
+                // Don't use stale indices
+                if self.dirty_indices.contains(field) {
+                    return None;
+                }
                 if let Some(field_index) = self.indices.get(field) {
                     let mut result = RoaringBitmap::new();
                     for value in values {
-                        let value_hash = hash_value(value);
-                        if let Some(bitmap) = field_index.get(&value_hash) {
+                        if let Some(bitmap) = field_index.get(value) {
                             result |= bitmap;
                         }
                     }
@@ -277,42 +327,6 @@ impl MetadataStore {
     pub fn get_id(&self, index: u32) -> Option<u64> {
         self.index_to_id.get(index as usize).copied()
     }
-}
-
-/// Hash a metadata value for indexing.
-fn hash_value(value: &MetadataValue) -> u64 {
-    use std::hash::{Hash, Hasher};
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-
-    match value {
-        MetadataValue::String(s) => {
-            0u8.hash(&mut hasher);
-            s.hash(&mut hasher);
-        }
-        MetadataValue::Integer(i) => {
-            1u8.hash(&mut hasher);
-            i.hash(&mut hasher);
-        }
-        MetadataValue::Float(f) => {
-            2u8.hash(&mut hasher);
-            f.to_bits().hash(&mut hasher);
-        }
-        MetadataValue::Boolean(b) => {
-            3u8.hash(&mut hasher);
-            b.hash(&mut hasher);
-        }
-        MetadataValue::Null => {
-            4u8.hash(&mut hasher);
-        }
-        MetadataValue::Array(arr) => {
-            5u8.hash(&mut hasher);
-            for item in arr {
-                hash_value(item).hash(&mut hasher);
-            }
-        }
-    }
-
-    hasher.finish()
 }
 
 #[cfg(test)]
@@ -444,5 +458,85 @@ mod tests {
         let bitmap = store.filter_bitmap(&filter);
 
         assert_eq!(bitmap.len(), 34);
+    }
+
+    #[test]
+    fn test_remove_invalidates_index() {
+        let mut store = create_test_store();
+        store.build_index("category");
+
+        assert!(!store.needs_rebuild());
+        assert!(!store.is_index_stale("category"));
+
+        // Remove a vector
+        store.remove(0);
+
+        // Index should now be dirty
+        assert!(store.needs_rebuild());
+        assert!(store.is_index_stale("category"));
+        assert!(store.dirty_fields().contains(&"category"));
+    }
+
+    #[test]
+    fn test_filter_after_remove_falls_back_to_scan() {
+        let mut store = create_test_store();
+        store.build_index("category");
+
+        // Remove an electronics item
+        store.remove(0);
+
+        // Filter should still work (falls back to scan)
+        let filter = FilterCondition::eq("category", "electronics");
+        let results = store.filter(&filter);
+
+        // Should be 33 now (0 was removed)
+        assert_eq!(results.len(), 33);
+        assert!(!results.contains(&0));
+    }
+
+    #[test]
+    fn test_rebuild_dirty_indices() {
+        let mut store = create_test_store();
+        store.build_index("category");
+
+        // Remove a vector
+        store.remove(0);
+        assert!(store.needs_rebuild());
+
+        // Rebuild
+        store.rebuild_dirty_indices();
+        assert!(!store.needs_rebuild());
+        assert!(!store.is_index_stale("category"));
+
+        // Filter should now use the rebuilt index
+        let filter = FilterCondition::eq("category", "electronics");
+        let results = store.filter(&filter);
+        assert_eq!(results.len(), 33);
+    }
+
+    #[test]
+    fn test_metadata_no_hash_collision() {
+        // This test verifies that we use MetadataValue directly as keys,
+        // not hashes, so there are no collision issues
+        let mut store = MetadataStore::new();
+
+        // Create values that might have the same hash with a weak hash function
+        store.insert(1, "tag", MetadataValue::String("abc".into()));
+        store.insert(2, "tag", MetadataValue::String("cba".into()));
+        store.insert(3, "tag", MetadataValue::Integer(123));
+
+        store.build_index("tag");
+
+        // Each should be found independently
+        let filter_abc = FilterCondition::eq("tag", "abc");
+        let filter_cba = FilterCondition::eq("tag", "cba");
+        let filter_int = FilterCondition::Equals {
+            field: "tag".to_string(),
+            value: MetadataValue::Integer(123),
+        };
+
+        assert_eq!(store.filter(&filter_abc), vec![1]);
+        assert_eq!(store.filter(&filter_cba), vec![2]);
+        assert_eq!(store.filter(&filter_int), vec![3]);
     }
 }

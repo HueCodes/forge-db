@@ -16,7 +16,9 @@
 //! - **4-bit PQ** (`ProductQuantizer4Bit`): 16 centroids per subspace, 2 codes per byte
 //!   (2x memory bandwidth savings with slight recall trade-off)
 
+use crate::constants::pq::{CENTROIDS_4BIT, CENTROIDS_8BIT, KMEANS_ITERATIONS};
 use crate::distance::euclidean_distance_squared;
+use crate::error::{ForgeDbError, Result};
 use crate::kmeans::KMeans;
 use crate::vector::Vector;
 use rayon::prelude::*;
@@ -46,16 +48,19 @@ impl ProductQuantizer {
     /// * `vectors` - Training vectors
     /// * `n_subvectors` - Number of subvectors (M). Must divide vector dimension evenly.
     ///
-    /// # Panics
-    /// Panics if the vector dimension is not divisible by n_subvectors.
-    pub fn train(vectors: &[Vector], n_subvectors: usize) -> Self {
+    /// # Errors
+    /// Returns an error if:
+    /// - The vector set is empty
+    /// - The vector dimension is not divisible by n_subvectors
+    pub fn try_train(vectors: &[Vector], n_subvectors: usize) -> Result<Self> {
+        if vectors.is_empty() {
+            return Err(ForgeDbError::EmptyTrainingSet);
+        }
+
         let dim = vectors[0].dim();
-        assert!(
-            dim % n_subvectors == 0,
-            "Vector dimension {} must be divisible by n_subvectors {}",
-            dim,
-            n_subvectors
-        );
+        if !dim.is_multiple_of(n_subvectors) {
+            return Err(ForgeDbError::dimension_not_divisible(dim, n_subvectors));
+        }
 
         let subvector_dim = dim / n_subvectors;
 
@@ -74,19 +79,32 @@ impl ProductQuantizer {
                     })
                     .collect();
 
-                // Run k-means with k=256 centroids (25 iters is enough)
-                let mut kmeans = KMeans::new(256, 25);
+                // Run k-means with k=256 centroids
+                let mut kmeans = KMeans::new(CENTROIDS_8BIT, KMEANS_ITERATIONS);
                 kmeans.fit(&subvectors);
                 kmeans.centroids
             })
             .collect();
 
-        Self {
+        Ok(Self {
             codebooks,
             n_subvectors,
             subvector_dim,
             dim,
-        }
+        })
+    }
+
+    /// Train a Product Quantizer on the given vectors.
+    ///
+    /// # Arguments
+    /// * `vectors` - Training vectors
+    /// * `n_subvectors` - Number of subvectors (M). Must divide vector dimension evenly.
+    ///
+    /// # Panics
+    /// Panics if the vector set is empty or the dimension is not divisible by n_subvectors.
+    /// Consider using [`try_train`](Self::try_train) for fallible construction.
+    pub fn train(vectors: &[Vector], n_subvectors: usize) -> Self {
+        Self::try_train(vectors, n_subvectors).expect("ProductQuantizer training failed")
     }
 
     /// Encode a vector into PQ codes.
@@ -511,16 +529,19 @@ impl ProductQuantizer4Bit {
     /// * `n_subvectors` - Number of subvectors (M). Must divide vector dimension evenly.
     ///   Should be even for optimal packing.
     ///
-    /// # Panics
-    /// Panics if the vector dimension is not divisible by n_subvectors.
-    pub fn train(vectors: &[Vector], n_subvectors: usize) -> Self {
+    /// # Errors
+    /// Returns an error if:
+    /// - The vector set is empty
+    /// - The vector dimension is not divisible by n_subvectors
+    pub fn try_train(vectors: &[Vector], n_subvectors: usize) -> Result<Self> {
+        if vectors.is_empty() {
+            return Err(ForgeDbError::EmptyTrainingSet);
+        }
+
         let dim = vectors[0].dim();
-        assert!(
-            dim % n_subvectors == 0,
-            "Vector dimension {} must be divisible by n_subvectors {}",
-            dim,
-            n_subvectors
-        );
+        if !dim.is_multiple_of(n_subvectors) {
+            return Err(ForgeDbError::dimension_not_divisible(dim, n_subvectors));
+        }
 
         let subvector_dim = dim / n_subvectors;
 
@@ -540,18 +561,32 @@ impl ProductQuantizer4Bit {
                     .collect();
 
                 // Run k-means with k=16 centroids (using k-means++ since k is small)
-                let mut kmeans = KMeans::new(16, 25);
+                let mut kmeans = KMeans::new(CENTROIDS_4BIT, KMEANS_ITERATIONS);
                 kmeans.fit(&subvectors);
                 kmeans.centroids
             })
             .collect();
 
-        Self {
+        Ok(Self {
             codebooks,
             n_subvectors,
             subvector_dim,
             dim,
-        }
+        })
+    }
+
+    /// Train a 4-bit Product Quantizer on the given vectors.
+    ///
+    /// # Arguments
+    /// * `vectors` - Training vectors
+    /// * `n_subvectors` - Number of subvectors (M). Must divide vector dimension evenly.
+    ///   Should be even for optimal packing.
+    ///
+    /// # Panics
+    /// Panics if the vector set is empty or the dimension is not divisible by n_subvectors.
+    /// Consider using [`try_train`](Self::try_train) for fallible construction.
+    pub fn train(vectors: &[Vector], n_subvectors: usize) -> Self {
+        Self::try_train(vectors, n_subvectors).expect("ProductQuantizer4Bit training failed")
     }
 
     /// Encode a vector into 4-bit PQ codes (unpacked).

@@ -19,6 +19,21 @@
 //! # On nightly Rust with the avx512 feature:
 //! cargo +nightly build --features avx512
 //! ```
+//!
+//! # Safety Notes
+//!
+//! The SIMD functions in this module use `unsafe` blocks for:
+//!
+//! 1. **SIMD intrinsic calls**: All SIMD intrinsics (AVX2, AVX-512, NEON) are inherently
+//!    unsafe in Rust's std::arch. However, they are memory-safe when:
+//!    - The CPU supports the required feature (enforced by `#[target_feature]` or runtime checks)
+//!    - Pointer arithmetic stays within the input slice bounds (ensured by loop bounds)
+//!
+//! 2. **Horizontal reductions**: Converting SIMD registers to scalar values uses
+//!    `transmute` or extraction intrinsics, which are safe given correct register types.
+//!
+//! All unsafe blocks in this module follow these invariants and are guarded by
+//! appropriate bounds checking.
 
 #[cfg(target_arch = "x86_64")]
 use std::arch::x86_64::*;
@@ -384,6 +399,67 @@ pub unsafe fn dot_product_avx2(a: &[f32], b: &[f32]) -> f32 {
     }
 
     total
+}
+
+/// Compute cosine distance using AVX2 and FMA intrinsics.
+///
+/// Computes dot product and norms in a single pass for efficiency:
+/// `cosine_distance = 1 - (a · b) / (||a|| * ||b||)`
+///
+/// # Safety
+/// - Requires AVX2 and FMA CPU features to be available.
+/// - The caller must ensure the CPU supports these features before calling.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2", enable = "fma")]
+#[inline]
+pub unsafe fn cosine_distance_avx2(a: &[f32], b: &[f32]) -> f32 {
+    assert_eq!(a.len(), b.len(), "Vector dimensions must match");
+
+    let len = a.len();
+    let mut dot_sum = _mm256_setzero_ps();
+    let mut norm_a_sum = _mm256_setzero_ps();
+    let mut norm_b_sum = _mm256_setzero_ps();
+    let mut i = 0;
+
+    // Process 8 floats at a time, computing all three sums in parallel
+    while i + 8 <= len {
+        let va = _mm256_loadu_ps(a.as_ptr().add(i));
+        let vb = _mm256_loadu_ps(b.as_ptr().add(i));
+
+        // dot_sum += a * b
+        dot_sum = _mm256_fmadd_ps(va, vb, dot_sum);
+        // norm_a_sum += a * a
+        norm_a_sum = _mm256_fmadd_ps(va, va, norm_a_sum);
+        // norm_b_sum += b * b
+        norm_b_sum = _mm256_fmadd_ps(vb, vb, norm_b_sum);
+
+        i += 8;
+    }
+
+    // Horizontal sums
+    let dot_array: [f32; 8] = std::mem::transmute(dot_sum);
+    let norm_a_array: [f32; 8] = std::mem::transmute(norm_a_sum);
+    let norm_b_array: [f32; 8] = std::mem::transmute(norm_b_sum);
+
+    let mut dot: f32 = dot_array.iter().sum();
+    let mut norm_a: f32 = norm_a_array.iter().sum();
+    let mut norm_b: f32 = norm_b_array.iter().sum();
+
+    // Handle remaining elements
+    while i < len {
+        dot += a[i] * b[i];
+        norm_a += a[i] * a[i];
+        norm_b += b[i] * b[i];
+        i += 1;
+    }
+
+    // Compute cosine distance: 1 - similarity
+    let norm_product = (norm_a * norm_b).sqrt();
+    if norm_product == 0.0 {
+        0.0
+    } else {
+        1.0 - (dot / norm_product)
+    }
 }
 
 // =============================================================================

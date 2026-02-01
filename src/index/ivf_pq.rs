@@ -69,6 +69,7 @@
 
 use crate::distance::{euclidean_distance_squared, DistanceMetric};
 use crate::error::Result;
+use crate::index::traits::{SearchResult, VectorIndex};
 use crate::kmeans::KMeans;
 use crate::persistence::{verify_header, write_with_header, IndexType, Persistable};
 use crate::pq::ProductQuantizer;
@@ -94,6 +95,8 @@ use std::arch::x86_64::{_mm_prefetch, _MM_HINT_T0};
 #[inline(always)]
 fn prefetch_read<T>(ptr: *const T) {
     #[cfg(target_arch = "x86_64")]
+    // SAFETY: _mm_prefetch is always safe - it's a CPU hint that does not
+    // dereference the pointer. Invalid addresses result in no-op, not crashes.
     unsafe {
         _mm_prefetch(ptr as *const i8, _MM_HINT_T0);
     }
@@ -101,6 +104,80 @@ fn prefetch_read<T>(ptr: *const T) {
     #[cfg(not(target_arch = "x86_64"))]
     let _ = ptr;
 }
+
+// =============================================================================
+// Search Configuration
+// =============================================================================
+
+/// Configuration for hybrid search operations.
+///
+/// Combines vector similarity search with optional metadata filtering,
+/// distance thresholds, and timeout limits.
+///
+/// # Example
+///
+/// ```ignore
+/// use forge_db::{IVFPQIndex, SearchConfig, FilterCondition};
+/// use std::time::Duration;
+///
+/// let config = SearchConfig::new(10)
+///     .with_filter(FilterCondition::eq("category", "electronics"))
+///     .with_max_distance(0.5)
+///     .with_timeout(Duration::from_millis(50));
+///
+/// let results = index.search_with_config(&query, config)?;
+/// ```
+#[derive(Clone, Debug)]
+pub struct SearchConfig {
+    /// Number of results to return.
+    pub k: usize,
+    /// Optional metadata filter condition.
+    pub filter: Option<crate::metadata::FilterCondition>,
+    /// Maximum distance threshold (results farther than this are discarded).
+    pub max_distance: Option<f32>,
+    /// Timeout for the search operation.
+    pub timeout: Option<std::time::Duration>,
+}
+
+impl SearchConfig {
+    /// Create a new search configuration.
+    pub fn new(k: usize) -> Self {
+        Self {
+            k,
+            filter: None,
+            max_distance: None,
+            timeout: None,
+        }
+    }
+
+    /// Add a metadata filter condition.
+    pub fn with_filter(mut self, filter: crate::metadata::FilterCondition) -> Self {
+        self.filter = Some(filter);
+        self
+    }
+
+    /// Set a maximum distance threshold.
+    pub fn with_max_distance(mut self, max_distance: f32) -> Self {
+        self.max_distance = Some(max_distance);
+        self
+    }
+
+    /// Set a timeout for the search operation.
+    pub fn with_timeout(mut self, timeout: std::time::Duration) -> Self {
+        self.timeout = Some(timeout);
+        self
+    }
+}
+
+impl Default for SearchConfig {
+    fn default() -> Self {
+        Self::new(10)
+    }
+}
+
+// =============================================================================
+// Partition Data
+// =============================================================================
 
 /// Data stored in each IVF partition.
 struct PartitionData {
@@ -453,6 +530,55 @@ impl IVFPQIndex {
         self.nprobe.load(AtomicOrdering::Relaxed)
     }
 
+    /// Find the nprobe nearest partitions to the query.
+    ///
+    /// Uses partial sort for efficiency when nprobe << n_partitions.
+    fn find_nearest_partitions(&self, query: &[f32], nprobe: usize) -> Vec<usize> {
+        let mut centroid_distances: Vec<(usize, f32)> = self
+            .centroids
+            .iter()
+            .enumerate()
+            .map(|(idx, c)| (idx, euclidean_distance_squared(query, &c.data)))
+            .collect();
+
+        let nth = nprobe.min(centroid_distances.len()).saturating_sub(1);
+        centroid_distances.select_nth_unstable_by(nth, |a, b| a.1.partial_cmp(&b.1).unwrap());
+
+        centroid_distances[..nprobe.min(centroid_distances.len())]
+            .iter()
+            .map(|(idx, _)| *idx)
+            .collect()
+    }
+
+    /// Re-rank PQ results using original vectors for higher accuracy.
+    fn rerank_results(
+        &self,
+        query: &[f32],
+        pq_results: Vec<(u64, f32)>,
+        k: usize,
+    ) -> Vec<(u64, f32)> {
+        if let Some(ref id_to_vec_lock) = self.original_vectors {
+            let id_to_vec = id_to_vec_lock.read().unwrap();
+            let mut reranked: Vec<(u64, f32)> = pq_results
+                .iter()
+                .filter_map(|(id, _)| {
+                    id_to_vec.get(id).map(|v| {
+                        let dist = euclidean_distance_squared(query, &v.data).sqrt();
+                        (*id, dist)
+                    })
+                })
+                .collect();
+
+            reranked.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+            reranked.truncate(k);
+            reranked
+        } else {
+            let mut results = pq_results;
+            results.truncate(k);
+            results
+        }
+    }
+
     /// Search for k nearest neighbors to the query.
     ///
     /// # Arguments
@@ -466,21 +592,11 @@ impl IVFPQIndex {
             k
         };
 
-        // Step 1: Find nprobe nearest centroids using partial sort
+        // Step 1: Find nearest partitions
         let nprobe = self.nprobe();
-        let mut centroid_distances: Vec<(usize, f32)> = self
-            .centroids
-            .iter()
-            .enumerate()
-            .map(|(idx, c)| (idx, euclidean_distance_squared(query, &c.data)))
-            .collect();
+        let partition_ids = self.find_nearest_partitions(query, nprobe);
 
-        // Partial sort - only need top nprobe, not full sort
-        let nth = nprobe.min(centroid_distances.len()).saturating_sub(1);
-        centroid_distances.select_nth_unstable_by(nth, |a, b| a.1.partial_cmp(&b.1).unwrap());
-
-        // Step 2-3: For each partition, compute residual and scan
-        // Use a bounded heap to avoid storing all results
+        // Step 2: Scan partitions using PQ distance
         use std::cmp::Ordering;
         use std::collections::BinaryHeap;
 
@@ -490,24 +606,22 @@ impl IVFPQIndex {
         impl Eq for HeapItem {}
         impl PartialOrd for HeapItem {
             fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-                // Max heap - we want largest distances at top for removal
-                self.1.partial_cmp(&other.1)
+                Some(self.cmp(other))
             }
         }
         impl Ord for HeapItem {
             fn cmp(&self, other: &Self) -> Ordering {
-                self.partial_cmp(other).unwrap_or(Ordering::Equal)
+                self.1.partial_cmp(&other.1).unwrap_or(Ordering::Equal)
             }
         }
 
         let mut heap: BinaryHeap<HeapItem> = BinaryHeap::with_capacity(fetch_k + 1);
 
-        for i in 0..nprobe.min(centroid_distances.len()) {
-            let partition_id = centroid_distances[i].0;
+        for &partition_id in &partition_ids {
             let partition = self.partitions[partition_id].read().unwrap();
             let centroid = &self.centroids[partition_id];
 
-            // Compute query residual for this partition (reuse allocation)
+            // Compute query residual for this partition
             let query_residual: Vec<f32> = query
                 .iter()
                 .zip(centroid.data.iter())
@@ -524,13 +638,12 @@ impl IVFPQIndex {
                 f32::MAX
             };
 
-            // Use indexed loop for prefetching
+            // Scan partition vectors
             let codes_slice = &partition.codes;
             let ids_slice = &partition.ids;
             let len = codes_slice.len();
 
             for j in 0..len {
-                // Prefetch 3 vectors ahead to hide memory latency
                 if j + 3 < len {
                     prefetch_read(codes_slice[j + 3].as_ptr());
                 }
@@ -538,14 +651,12 @@ impl IVFPQIndex {
                 let codes = &codes_slice[j];
                 let id = ids_slice[j];
 
-                // Skip tombstoned vectors
                 if partition.tombstones.contains(&id) {
                     continue;
                 }
 
                 let dist = self.pq.asymmetric_distance_fast(&lookup_table, codes);
 
-                // Only insert if better than current k-th best
                 if dist < threshold || heap.len() < fetch_k {
                     heap.push(HeapItem(id, dist));
                     if heap.len() > fetch_k {
@@ -555,31 +666,11 @@ impl IVFPQIndex {
             }
         }
 
-        // Convert heap to sorted vector
+        // Step 3: Sort and optionally re-rank results
         let mut results: Vec<(u64, f32)> = heap.into_iter().map(|h| (h.0, h.1)).collect();
         results.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
 
-        // Re-rank with original vectors if enabled
-        if let Some(ref id_to_vec_lock) = self.original_vectors {
-            let id_to_vec = id_to_vec_lock.read().unwrap();
-            // Re-compute exact distances for candidates (O(1) lookup per candidate)
-            let mut reranked: Vec<(u64, f32)> = results
-                .iter()
-                .filter_map(|(id, _)| {
-                    id_to_vec.get(id).map(|v| {
-                        let dist = euclidean_distance_squared(query, &v.data).sqrt();
-                        (*id, dist)
-                    })
-                })
-                .collect();
-
-            reranked.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
-            reranked.truncate(k);
-            return reranked;
-        }
-
-        results.truncate(k);
-        results
+        self.rerank_results(query, results, k)
     }
 
     /// Search for k nearest neighbors with metadata filtering.
@@ -641,19 +732,18 @@ impl IVFPQIndex {
         impl Eq for HeapItem {}
         impl PartialOrd for HeapItem {
             fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-                self.1.partial_cmp(&other.1)
+                Some(self.cmp(other))
             }
         }
         impl Ord for HeapItem {
             fn cmp(&self, other: &Self) -> Ordering {
-                self.partial_cmp(other).unwrap_or(Ordering::Equal)
+                self.1.partial_cmp(&other.1).unwrap_or(Ordering::Equal)
             }
         }
 
         let mut heap: BinaryHeap<HeapItem> = BinaryHeap::with_capacity(filter_fetch_k + 1);
 
-        for i in 0..nprobe.min(centroid_distances.len()) {
-            let partition_id = centroid_distances[i].0;
+        for &(partition_id, _) in centroid_distances.iter().take(nprobe.min(centroid_distances.len())) {
             let partition = self.partitions[partition_id].read().unwrap();
             let centroid = &self.centroids[partition_id];
 
@@ -811,12 +901,12 @@ impl IVFPQIndex {
         impl Eq for HeapItem {}
         impl PartialOrd for HeapItem {
             fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-                self.1.partial_cmp(&other.1)
+                Some(self.cmp(other))
             }
         }
         impl Ord for HeapItem {
             fn cmp(&self, other: &Self) -> Ordering {
-                self.partial_cmp(other).unwrap_or(Ordering::Equal)
+                self.1.partial_cmp(&other.1).unwrap_or(Ordering::Equal)
             }
         }
 
@@ -1161,19 +1251,18 @@ impl IVFPQIndex {
         impl Eq for HeapItem {}
         impl PartialOrd for HeapItem {
             fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-                self.1.partial_cmp(&other.1)
+                Some(self.cmp(other))
             }
         }
         impl Ord for HeapItem {
             fn cmp(&self, other: &Self) -> Ordering {
-                self.partial_cmp(other).unwrap_or(Ordering::Equal)
+                self.1.partial_cmp(&other.1).unwrap_or(Ordering::Equal)
             }
         }
 
         let mut heap: BinaryHeap<HeapItem> = BinaryHeap::with_capacity(fetch_k + 1);
 
-        for i in 0..nprobe.min(centroid_distances.len()) {
-            let partition_id = centroid_distances[i].0;
+        for &(partition_id, _) in centroid_distances.iter().take(nprobe.min(centroid_distances.len())) {
             let partition = self.partitions[partition_id].read().unwrap();
             let centroid = &self.centroids[partition_id];
 
@@ -1318,20 +1407,19 @@ impl IVFPQIndex {
         impl Eq for HeapItem {}
         impl PartialOrd for HeapItem {
             fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-                self.1.partial_cmp(&other.1)
+                Some(self.cmp(other))
             }
         }
         impl Ord for HeapItem {
             fn cmp(&self, other: &Self) -> Ordering {
-                self.partial_cmp(other).unwrap_or(Ordering::Equal)
+                self.1.partial_cmp(&other.1).unwrap_or(Ordering::Equal)
             }
         }
 
         let mut heap: BinaryHeap<HeapItem> = BinaryHeap::with_capacity(fetch_k + 1);
 
         // Process partitions with periodic timeout checks
-        for i in 0..nprobe.min(centroid_distances.len()) {
-            let partition_id = centroid_distances[i].0;
+        for &(partition_id, _) in centroid_distances.iter().take(nprobe.min(centroid_distances.len())) {
             let partition = self.partitions[partition_id].read().unwrap();
             let centroid = &self.centroids[partition_id];
 
@@ -1569,7 +1657,7 @@ impl IVFPQIndex {
         }
 
         // Check if index is empty
-        if self.len() == 0 {
+        if self.is_empty() {
             warnings.push("Index is empty".to_string());
         }
 
@@ -1846,6 +1934,31 @@ impl IVFPQIndex {
             original_vectors,
             rerank_factor: s.rerank_factor,
         }
+    }
+}
+
+// =============================================================================
+// Trait Implementations
+// =============================================================================
+
+impl VectorIndex for IVFPQIndex {
+    fn search(&self, query: &[f32], k: usize) -> Vec<SearchResult> {
+        self.search(query, k)
+            .into_iter()
+            .map(SearchResult::from)
+            .collect()
+    }
+
+    fn len(&self) -> usize {
+        self.len()
+    }
+
+    fn is_empty(&self) -> bool {
+        self.is_empty()
+    }
+
+    fn dimension(&self) -> usize {
+        self.dim()
     }
 }
 

@@ -4,7 +4,11 @@
 //! search algorithms. It computes distances to all vectors and returns the
 //! k closest.
 
+use crate::constants::cache::BRUTE_FORCE_CHUNK_SIZE;
 use crate::distance::DistanceMetric;
+use crate::error::{ForgeDbError, Result};
+use crate::index::traits::{MutableVectorIndex, SearchResult, VectorIndex};
+use crate::types::VectorId;
 use crate::vector::Vector;
 use rayon::prelude::*;
 use std::cmp::Ordering;
@@ -30,16 +34,15 @@ impl Eq for ScoredVector {}
 
 impl PartialOrd for ScoredVector {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        // Normal ordering: BinaryHeap is a max-heap, so peek() gives largest distance.
-        // This lets us efficiently maintain the k smallest distances by comparing
-        // new candidates against our current worst (largest) distance.
-        self.distance.partial_cmp(&other.distance)
+        Some(self.cmp(other))
     }
 }
 
 impl Ord for ScoredVector {
     fn cmp(&self, other: &Self) -> Ordering {
-        self.partial_cmp(other).unwrap_or(Ordering::Equal)
+        self.distance
+            .partial_cmp(&other.distance)
+            .unwrap_or(Ordering::Equal)
     }
 }
 
@@ -74,6 +77,13 @@ impl BruteForceIndex {
     /// Return true if the index is empty.
     pub fn is_empty(&self) -> bool {
         self.vectors.is_empty()
+    }
+
+    /// Return the dimensionality of vectors in this index.
+    ///
+    /// Returns 0 if the index is empty.
+    pub fn dimension(&self) -> usize {
+        self.vectors.first().map(|v| v.dim()).unwrap_or(0)
     }
 
     /// Search for the k nearest neighbors using basic linear scan.
@@ -116,6 +126,8 @@ impl BruteForceIndex {
             // Prefetch next vector's data
             #[cfg(target_arch = "x86_64")]
             if i + 1 < self.vectors.len() {
+                // SAFETY: _mm_prefetch is always safe - it's a CPU hint that does not
+                // dereference the pointer. Invalid addresses result in no-op, not crashes.
                 unsafe {
                     _mm_prefetch(self.vectors[i + 1].data.as_ptr() as *const i8, _MM_HINT_T0);
                 }
@@ -149,11 +161,9 @@ impl BruteForceIndex {
     /// Divides the vector set into chunks, processes each chunk in parallel,
     /// then merges results. Provides near-linear scaling with CPU cores.
     pub fn search_parallel(&self, query: &[f32], k: usize) -> Vec<(u64, f32)> {
-        const CHUNK_SIZE: usize = 1000;
-
         let final_heap = self
             .vectors
-            .par_chunks(CHUNK_SIZE)
+            .par_chunks(BRUTE_FORCE_CHUNK_SIZE)
             .map(|chunk| {
                 let mut local_heap: BinaryHeap<ScoredVector> = BinaryHeap::with_capacity(k);
 
@@ -208,6 +218,52 @@ impl BruteForceIndex {
             .par_iter()
             .map(|query| self.search_parallel(&query.data, k))
             .collect()
+    }
+}
+
+// =============================================================================
+// Trait Implementations
+// =============================================================================
+
+impl VectorIndex for BruteForceIndex {
+    fn search(&self, query: &[f32], k: usize) -> Vec<SearchResult> {
+        self.search(query, k)
+            .into_iter()
+            .map(SearchResult::from)
+            .collect()
+    }
+
+    fn len(&self) -> usize {
+        self.len()
+    }
+
+    fn is_empty(&self) -> bool {
+        self.is_empty()
+    }
+
+    fn dimension(&self) -> usize {
+        self.dimension()
+    }
+}
+
+impl MutableVectorIndex for BruteForceIndex {
+    fn add(&mut self, id: VectorId, data: &[f32]) -> Result<()> {
+        // Check dimension consistency
+        if !self.vectors.is_empty() {
+            let expected_dim = self.vectors[0].dim();
+            if data.len() != expected_dim {
+                return Err(ForgeDbError::dimension_mismatch(expected_dim, data.len()));
+            }
+        }
+
+        self.vectors.push(Vector::new(id.0, data.to_vec()));
+        Ok(())
+    }
+
+    fn remove(&mut self, id: VectorId) -> Result<bool> {
+        let initial_len = self.vectors.len();
+        self.vectors.retain(|v| v.id != id.0);
+        Ok(self.vectors.len() < initial_len)
     }
 }
 

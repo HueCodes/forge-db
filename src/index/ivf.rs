@@ -4,7 +4,9 @@
 //! only the most relevant partitions at query time. This trades some recall
 //! for dramatically faster search on large datasets.
 
+use crate::constants::kmeans::DEFAULT_MAX_ITERATIONS;
 use crate::distance::{euclidean_distance_squared, DistanceMetric};
+use crate::index::traits::{SearchResult, VectorIndex};
 use crate::kmeans::KMeans;
 use crate::vector::Vector;
 use rayon::prelude::*;
@@ -22,6 +24,8 @@ use std::arch::x86_64::{_mm_prefetch, _MM_HINT_T0};
 #[inline(always)]
 fn prefetch_read<T>(ptr: *const T) {
     #[cfg(target_arch = "x86_64")]
+    // SAFETY: _mm_prefetch is always safe - it's a CPU hint that does not
+    // dereference the pointer. Invalid addresses result in no-op, not crashes.
     unsafe {
         _mm_prefetch(ptr as *const i8, _MM_HINT_T0);
     }
@@ -46,15 +50,15 @@ impl Eq for ScoredVector {}
 
 impl PartialOrd for ScoredVector {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        // Max-heap ordering: BinaryHeap gives us largest first
-        // We want to maintain k smallest, so peek() gives current worst
-        self.distance.partial_cmp(&other.distance)
+        Some(self.cmp(other))
     }
 }
 
 impl Ord for ScoredVector {
     fn cmp(&self, other: &Self) -> Ordering {
-        self.partial_cmp(other).unwrap_or(Ordering::Equal)
+        self.distance
+            .partial_cmp(&other.distance)
+            .unwrap_or(Ordering::Equal)
     }
 }
 
@@ -86,7 +90,7 @@ impl IVFIndex {
     /// A new IVFIndex ready for search queries.
     pub fn build(vectors: Vec<Vector>, n_clusters: usize, metric: DistanceMetric) -> Self {
         // Train k-means clustering
-        let mut kmeans = KMeans::new(n_clusters, 100);
+        let mut kmeans = KMeans::new(n_clusters, DEFAULT_MAX_ITERATIONS);
         kmeans.fit(&vectors);
 
         // Initialize empty partitions
@@ -140,6 +144,11 @@ impl IVFIndex {
     /// Return the number of partitions (clusters).
     pub fn num_partitions(&self) -> usize {
         self.partitions.len()
+    }
+
+    /// Return the dimensionality of vectors in this index.
+    pub fn dimension(&self) -> usize {
+        self.centroids.first().map(|c| c.dim()).unwrap_or(0)
     }
 
     /// Search for the k nearest neighbors.
@@ -393,6 +402,31 @@ impl IVFIndex {
                 results
             })
             .collect()
+    }
+}
+
+// =============================================================================
+// Trait Implementations
+// =============================================================================
+
+impl VectorIndex for IVFIndex {
+    fn search(&self, query: &[f32], k: usize) -> Vec<SearchResult> {
+        self.search(query, k)
+            .into_iter()
+            .map(SearchResult::from)
+            .collect()
+    }
+
+    fn len(&self) -> usize {
+        self.len()
+    }
+
+    fn is_empty(&self) -> bool {
+        self.is_empty()
+    }
+
+    fn dimension(&self) -> usize {
+        self.dimension()
     }
 }
 
