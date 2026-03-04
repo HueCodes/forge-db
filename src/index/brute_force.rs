@@ -267,6 +267,84 @@ impl MutableVectorIndex for BruteForceIndex {
     }
 }
 
+impl crate::Persistable for BruteForceIndex {
+    fn save(&self, path: impl AsRef<std::path::Path>) -> crate::error::Result<()> {
+        let dim = self.dimension();
+        let n = self.vectors.len();
+
+        // Payload: [metric:u8][n:u64][dim:u64][id:u64, data:f32*dim ...]
+        let metric_byte: u8 = match self.metric {
+            DistanceMetric::Euclidean => 0,
+            DistanceMetric::EuclideanSquared => 1,
+            DistanceMetric::Cosine => 2,
+            DistanceMetric::DotProduct => 3,
+            DistanceMetric::Manhattan => 4,
+        };
+        let entry_bytes = 8 + dim * 4;
+        let mut payload = Vec::with_capacity(1 + 8 + 8 + n * entry_bytes);
+
+        payload.push(metric_byte);
+        payload.extend_from_slice(&(n as u64).to_le_bytes());
+        payload.extend_from_slice(&(dim as u64).to_le_bytes());
+
+        for v in &self.vectors {
+            payload.extend_from_slice(&v.id.to_le_bytes());
+            for &x in v.data.iter() {
+                payload.extend_from_slice(&x.to_le_bytes());
+            }
+        }
+
+        crate::persistence::write_with_header(
+            path,
+            crate::persistence::IndexType::BruteForce,
+            &payload,
+        )
+    }
+
+    fn load(path: impl AsRef<std::path::Path>) -> crate::error::Result<Self> {
+        let raw = std::fs::read(path)?;
+        let payload = crate::persistence::verify_header(&raw, crate::persistence::IndexType::BruteForce)?;
+
+        if payload.len() < 17 {
+            return Err(crate::error::ForgeDbError::invalid_format("brute-force payload too small"));
+        }
+
+        let metric_byte = payload[0];
+        let metric = match metric_byte {
+            0 => DistanceMetric::Euclidean,
+            1 => DistanceMetric::EuclideanSquared,
+            2 => DistanceMetric::Cosine,
+            3 => DistanceMetric::DotProduct,
+            4 => DistanceMetric::Manhattan,
+            _ => return Err(crate::error::ForgeDbError::invalid_format("unknown metric byte")),
+        };
+
+        let n = u64::from_le_bytes(payload[1..9].try_into().unwrap()) as usize;
+        let dim = u64::from_le_bytes(payload[9..17].try_into().unwrap()) as usize;
+
+        let entry_bytes = 8 + dim * 4;
+        let expected_len = 17 + n * entry_bytes;
+        if payload.len() < expected_len {
+            return Err(crate::error::ForgeDbError::invalid_format("brute-force payload truncated"));
+        }
+
+        let mut index = BruteForceIndex::new(metric);
+        let mut offset = 17;
+
+        for _ in 0..n {
+            let id = u64::from_le_bytes(payload[offset..offset + 8].try_into().unwrap());
+            offset += 8;
+            let data: Vec<f32> = (0..dim)
+                .map(|i| f32::from_le_bytes(payload[offset + i * 4..offset + i * 4 + 4].try_into().unwrap()))
+                .collect();
+            offset += dim * 4;
+            index.add(crate::vector::Vector::new(id, data));
+        }
+
+        Ok(index)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -312,5 +390,29 @@ mod tests {
             assert_eq!(basic[i].0, prefetch[i].0);
             assert_eq!(basic[i].0, parallel[i].0);
         }
+    }
+
+    #[test]
+    fn test_persistence_roundtrip() {
+        use crate::Persistable;
+
+        let mut index = BruteForceIndex::new(DistanceMetric::Cosine);
+        for i in 0..50u64 {
+            index.add(Vector::random(i, 16));
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bf.fdb");
+        index.save(&path).unwrap();
+
+        let loaded = BruteForceIndex::load(&path).unwrap();
+        assert_eq!(loaded.len(), 50);
+        assert_eq!(loaded.dimension(), 16);
+
+        // Search results should be identical
+        let query = Vector::random(999, 16);
+        let a = index.search(&query.data, 5);
+        let b = loaded.search(&query.data, 5);
+        assert_eq!(a, b);
     }
 }
