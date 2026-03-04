@@ -1,0 +1,245 @@
+syntax = "proto3";
+
+package forge;
+
+option java_package = "io.forgedb";
+option java_outer_classname = "ForgeProto";
+option java_multiple_files = true;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// forge-db gRPC Service
+// ─────────────────────────────────────────────────────────────────────────────
+service ForgeService {
+  // Vector operations
+  rpc UpsertVectors(UpsertRequest)   returns (UpsertResponse);
+  rpc DeleteVectors(DeleteRequest)   returns (DeleteResponse);
+
+  // Search operations
+  rpc Search(SearchRequest)          returns (SearchResponse);
+  rpc BatchSearch(BatchSearchRequest) returns (BatchSearchResponse);
+
+  // Collection management
+  rpc CreateCollection(CreateCollectionRequest) returns (CreateCollectionResponse);
+  rpc DropCollection(DropCollectionRequest)     returns (DropCollectionResponse);
+  rpc ListCollections(ListCollectionsRequest)   returns (ListCollectionsResponse);
+  rpc GetCollectionInfo(GetCollectionInfoRequest) returns (GetCollectionInfoResponse);
+
+  // Index building
+  rpc BuildIndex(BuildIndexRequest)  returns (BuildIndexResponse);
+
+  // Persistence
+  rpc Checkpoint(CheckpointRequest)  returns (CheckpointResponse);
+  rpc Compact(CompactRequest)        returns (CompactResponse);
+
+  // Health
+  rpc Health(HealthRequest)          returns (HealthResponse);
+  rpc GetStats(GetStatsRequest)      returns (GetStatsResponse);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Common types
+// ─────────────────────────────────────────────────────────────────────────────
+message VectorRecord {
+  uint64 id                         = 1;
+  repeated float vector             = 2 [packed = true];
+  // Metadata as a JSON-encoded string for flexibility.
+  string metadata_json              = 3;
+}
+
+message SearchResultItem {
+  uint64 id                         = 1;
+  float  distance                   = 2;
+  string metadata_json              = 3;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Vector operations
+// ─────────────────────────────────────────────────────────────────────────────
+message UpsertRequest {
+  string collection                 = 1;
+  repeated VectorRecord vectors     = 2;
+}
+
+message UpsertResponse {
+  uint64 upserted_count             = 1;
+  repeated uint64 failed_ids        = 2;
+}
+
+message DeleteRequest {
+  string collection                 = 1;
+  repeated uint64 ids               = 2;
+}
+
+message DeleteResponse {
+  uint64 deleted_count              = 1;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Search
+// ─────────────────────────────────────────────────────────────────────────────
+message SearchRequest {
+  string collection                 = 1;
+  repeated float query              = 2 [packed = true];
+  uint32 top_k                      = 3;
+  // Optional metadata filter as a JSON-encoded FilterCondition.
+  string filter_json                = 4;
+  // Maximum distance threshold (0 = no limit).
+  float  max_distance               = 5;
+  // Override nprobe for this query (0 = use collection default).
+  uint32 nprobe                     = 6;
+}
+
+message SearchResponse {
+  repeated SearchResultItem results = 1;
+  SearchStats stats                 = 2;
+}
+
+message SearchStats {
+  float  latency_ms                 = 1;
+  uint64 vectors_scanned            = 2;
+  uint32 partitions_probed          = 3;
+}
+
+message BatchSearchRequest {
+  string collection                 = 1;
+  repeated SingleQuery queries      = 2;
+}
+
+message SingleQuery {
+  repeated float query              = 1 [packed = true];
+  uint32 top_k                      = 2;
+  string filter_json                = 3;
+}
+
+message BatchSearchResponse {
+  repeated SearchResponse results   = 1;
+  float total_latency_ms            = 2;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Collection management
+// ─────────────────────────────────────────────────────────────────────────────
+message IndexTypeProto {
+  enum Kind {
+    IVF_PQ      = 0;
+    HNSW        = 1;
+    IVF         = 2;
+    BRUTE_FORCE = 3;
+  }
+}
+
+message CollectionConfig {
+  uint32 dimension                  = 1;
+  IndexTypeProto.Kind index_type    = 2;
+  string distance_metric            = 3;  // "euclidean", "cosine", "dot_product"
+  // IVF / IVF-PQ settings
+  uint32 n_clusters                 = 4;
+  uint32 n_subvectors               = 5;
+  uint32 nprobe                     = 6;
+  // HNSW settings
+  uint32 m                          = 7;
+  uint32 ef_construction            = 8;
+  uint32 ef_search                  = 9;
+  // Reranking
+  bool   enable_reranking           = 10;
+  uint32 rerank_factor              = 11;
+}
+
+message CreateCollectionRequest {
+  string name                       = 1;
+  CollectionConfig config           = 2;
+}
+
+message CreateCollectionResponse {
+  bool   created                    = 1;
+  string message                    = 2;
+}
+
+message DropCollectionRequest {
+  string name                       = 1;
+}
+
+message DropCollectionResponse {
+  bool   dropped                    = 1;
+}
+
+message ListCollectionsRequest {}
+
+message ListCollectionsResponse {
+  repeated string names             = 1;
+}
+
+message GetCollectionInfoRequest {
+  string name                       = 1;
+}
+
+message GetCollectionInfoResponse {
+  string name                       = 1;
+  CollectionConfig config           = 2;
+  uint64 vector_count               = 3;
+  uint64 memory_bytes               = 4;
+  string health_status              = 5;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Index building
+// ─────────────────────────────────────────────────────────────────────────────
+message BuildIndexRequest {
+  string collection                 = 1;
+  // IVF-PQ build parameters (0 = auto-tune)
+  repeated VectorRecord vectors     = 2;
+  uint32 n_clusters                 = 3;
+  uint32 n_subvectors               = 4;
+  bool   auto_tune                  = 5;
+}
+
+message BuildIndexResponse {
+  bool   success                    = 1;
+  string message                    = 2;
+  uint64 vectors_indexed            = 3;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Maintenance
+// ─────────────────────────────────────────────────────────────────────────────
+message CheckpointRequest {
+  string collection                 = 1;  // empty = checkpoint all
+}
+
+message CheckpointResponse {
+  bool   success                    = 1;
+  uint64 checkpoint_seq             = 2;
+}
+
+message CompactRequest {
+  string collection                 = 1;
+}
+
+message CompactResponse {
+  bool   success                    = 1;
+  uint64 vectors_removed            = 2;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Health & Stats
+// ─────────────────────────────────────────────────────────────────────────────
+message HealthRequest {}
+
+message HealthResponse {
+  string status                     = 1;  // "healthy", "degraded", "unhealthy"
+  string version                    = 2;
+  uint64 uptime_seconds             = 3;
+}
+
+message GetStatsRequest {
+  string collection                 = 1;  // empty = global stats
+}
+
+message GetStatsResponse {
+  uint64 total_vectors              = 1;
+  uint64 total_collections          = 2;
+  uint64 total_memory_bytes         = 3;
+  float  avg_search_latency_ms      = 4;
+  uint64 total_searches             = 5;
+  uint64 uptime_seconds             = 6;
+}
