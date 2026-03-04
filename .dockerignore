@@ -1,0 +1,34 @@
+# Build artifacts
+target/
+.cargo/
+
+# Development files
+data/
+*.fdb
+*.log
+benches/
+
+# Documentation
+ARCHITECTURE.md
+README.draft.md
+TECHNICAL_DEEP_DIVE.txt
+
+# Test data
+sift/
+sift.tar.gz
+
+# Editor and OS files
+.DS_Store
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Git
+.git/
+.github/
+
+# CI and tooling configs (not needed in container)
+deny.toml
+pgo-build.sh

@@ -1,0 +1,35 @@
+# forge-db Docker default configuration
+
+data_dir = "/var/lib/forge-db/data"
+wal_dir = "/var/lib/forge-db/wal"
+max_memory_bytes = 8589934592  # 8 GiB
+
+[server]
+grpc_addr = "0.0.0.0:50051"
+http_addr = "0.0.0.0:8080"
+max_concurrency = 256
+request_timeout_ms = 30000
+
+[default_index]
+index_type = "ivf_pq"
+enable_reranking = false
+rerank_factor = 4
+
+[default_index.ivf]
+n_clusters = 1024
+nprobe = 16
+max_iterations = 100
+
+[default_index.hnsw]
+m = 16
+ef_construction = 200
+ef_search = 50
+
+[default_index.pq]
+n_subvectors = 32
+bits_per_code = 8
+
+[log]
+level = "info"
+format = "json"
+include_spans = false

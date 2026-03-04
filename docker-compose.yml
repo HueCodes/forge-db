@@ -1,0 +1,83 @@
+version: "3.9"
+
+services:
+  # ─────────────────────────────────────────────────────────────────────────
+  # forge-server: The main vector database service
+  # ─────────────────────────────────────────────────────────────────────────
+  forge-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: forge-db:local
+    container_name: forge-server
+    restart: unless-stopped
+    ports:
+      - "50051:50051"   # gRPC
+      - "8080:8080"     # HTTP/REST
+      - "9090:9090"     # Prometheus metrics
+    volumes:
+      - forge_data:/var/lib/forge-db
+      - ./docker/forge.toml:/etc/forge-db/forge.toml:ro
+    environment:
+      - RUST_LOG=info,forge_db=debug
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    networks:
+      - forge-network
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Prometheus: metrics scraping
+  # ─────────────────────────────────────────────────────────────────────────
+  prometheus:
+    image: prom/prometheus:v2.49.1
+    container_name: prometheus
+    restart: unless-stopped
+    ports:
+      - "9091:9090"
+    volumes:
+      - ./docker/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.retention.time=15d"
+    networks:
+      - forge-network
+    depends_on:
+      - forge-server
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Grafana: dashboards
+  # ─────────────────────────────────────────────────────────────────────────
+  grafana:
+    image: grafana/grafana:10.3.1
+    container_name: grafana
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./docker/grafana/provisioning:/etc/grafana/provisioning:ro
+    environment:
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    networks:
+      - forge-network
+    depends_on:
+      - prometheus
+
+volumes:
+  forge_data:
+    driver: local
+  prometheus_data:
+    driver: local
+  grafana_data:
+    driver: local
+
+networks:
+  forge-network:
+    driver: bridge

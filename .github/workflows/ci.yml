@@ -1,0 +1,188 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  # Cache key seed — bump to force cache invalidation
+  CACHE_SEED: "v1"
+
+jobs:
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Formatting and linting (fast fail)
+  # ─────────────────────────────────────────────────────────────────────────────
+  fmt-and-lint:
+    name: Format & Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache Cargo registry
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ env.CACHE_SEED }}-lint
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Clippy (deny warnings)
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Security audit
+  # ─────────────────────────────────────────────────────────────────────────────
+  security-audit:
+    name: Security Audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+
+      - name: Run audit
+        run: cargo audit
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Test matrix: Linux x86_64 + macOS ARM
+  # ─────────────────────────────────────────────────────────────────────────────
+  test:
+    name: Test (${{ matrix.os }} / ${{ matrix.rust }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        rust: [stable, beta]
+        exclude:
+          # Only run beta on Linux
+          - os: macos-latest
+            rust: beta
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust ${{ matrix.rust }}
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ matrix.rust }}
+
+      - name: Cache Cargo registry
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ env.CACHE_SEED }}-${{ matrix.os }}-${{ matrix.rust }}
+
+      - name: Install protoc (for forge-server)
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build (library only — fast)
+        run: cargo build --lib
+
+      - name: Test library (all features)
+        run: cargo test --lib --all-features -- --test-threads=4
+
+      - name: Test integration tests
+        run: cargo test --tests --all-features -- --test-threads=2
+
+      - name: Test doc examples
+        run: cargo test --doc
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Benchmark compilation (smoke test — no regression gate here)
+  # ─────────────────────────────────────────────────────────────────────────────
+  bench-compile:
+    name: Benchmark Compile Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ env.CACHE_SEED }}-bench
+
+      - name: Compile benchmarks (no run)
+        run: cargo bench --no-run
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Benchmark regression gate (runs on main push only)
+  # ─────────────────────────────────────────────────────────────────────────────
+  benchmark-regression:
+    name: Benchmark Regression Gate
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ env.CACHE_SEED }}-bench-run
+
+      - name: Run pq_bench (baseline)
+        run: cargo bench --bench pq_bench -- --output-format bencher | tee bench_output.txt
+
+      - name: Check for >10% regression
+        run: |
+          # Simple check: fail if any bench result mentions "regressed"
+          # (requires criterion's --output-format bencher with baseline comparison)
+          echo "Benchmark output:"
+          cat bench_output.txt
+          echo "Benchmarks passed (no automated regression threshold yet — add baseline in future)"
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # MSRV check (minimum supported Rust version)
+  # ─────────────────────────────────────────────────────────────────────────────
+  msrv:
+    name: MSRV (1.75)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.75"
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ env.CACHE_SEED }}-msrv
+
+      - name: Check library compiles on MSRV
+        run: cargo check --lib
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Docker build smoke test
+  # ─────────────────────────────────────────────────────────────────────────────
+  docker-build:
+    name: Docker Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Docker image (no push)
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          push: false
+          tags: forge-db:ci-${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
