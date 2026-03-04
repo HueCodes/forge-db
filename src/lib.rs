@@ -64,6 +64,7 @@
 //! - [`persistence`]: Save/load indexes to disk
 //! - [`metrics`]: Index statistics and health monitoring
 
+pub mod config;
 pub mod constants;
 pub mod dataset;
 pub mod distance;
@@ -76,8 +77,10 @@ pub mod persistence;
 pub mod pq;
 pub mod types;
 pub mod vector;
+pub mod wal;
 
 // Re-export commonly used types at crate root
+pub use config::{ForgeConfig, IndexConfig, IndexType as ConfigIndexType, ServerConfig};
 pub use dataset::{recall_at_k, Dataset};
 pub use distance::DistanceMetric;
 pub use error::{ForgeDbError, Result};
@@ -89,3 +92,4 @@ pub use metadata::{FilterCondition, MetadataStore, MetadataValue, VectorWithMeta
 pub use persistence::Persistable;
 pub use types::{Dimension, NumClusters, NumSubvectors, VectorId};
 pub use vector::{AlignedVector, Vector, VectorStore};
+pub use wal::{WalOperation, WriteAheadLog};

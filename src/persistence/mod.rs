@@ -29,6 +29,7 @@ pub use format::{FileHeader, IndexType, FORMAT_VERSION, MAGIC};
 
 use crate::error::{ForgeDbError, Result};
 use std::path::Path;
+use tracing::instrument;
 
 /// Trait for types that can be persisted to disk.
 pub trait Persistable: Sized {
@@ -93,6 +94,7 @@ pub(crate) fn verify_header(data: &[u8], expected_type: IndexType) -> Result<&[u
 }
 
 /// Write header and data to file.
+#[instrument(skip(data), fields(path = %path.as_ref().display(), bytes = data.len()))]
 pub(crate) fn write_with_header(
     path: impl AsRef<Path>,
     index_type: IndexType,

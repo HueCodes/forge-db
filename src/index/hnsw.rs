@@ -34,6 +34,7 @@ use std::cmp::Ordering;
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
 use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+use tracing::instrument;
 
 #[cfg(target_arch = "x86_64")]
 use std::arch::x86_64::{_mm_prefetch, _MM_HINT_T0};
@@ -315,6 +316,7 @@ impl HNSWIndex {
     ///
     /// This invalidates the finalized state. Call `finalize()` again before
     /// searching for optimal performance.
+    #[instrument(skip(self, vector), fields(id = vector.id))]
     pub fn add(&mut self, vector: Vector) {
         // Invalidate flat graph on modification
         self.flat_graph = None;
@@ -383,6 +385,7 @@ impl HNSWIndex {
     /// - `search()` becomes completely lock-free
     /// - Multiple threads can search concurrently without contention
     /// - Adding more vectors will require re-finalization
+    #[instrument(skip(self), fields(n = self.graph.len()))]
     pub fn finalize(&mut self) {
         if !self.finalized && !self.graph.is_empty() {
             self.flat_graph = Some(FlatGraph::build_from(&self.graph, self.max_layer));
@@ -567,6 +570,7 @@ impl HNSWIndex {
     /// # Returns
     ///
     /// Vector of (id, distance) pairs sorted by distance (closest first).
+    #[instrument(skip(self, query), fields(k, n = self.graph.len()))]
     pub fn search(&self, query: &[f32], k: usize) -> Vec<(u64, f32)> {
         if self.entry_point.is_none() {
             return Vec::new();

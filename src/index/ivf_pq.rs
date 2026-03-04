@@ -80,6 +80,7 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 use std::sync::RwLock;
+use tracing::instrument;
 
 // =============================================================================
 // Software Prefetching for x86_64
@@ -369,6 +370,7 @@ impl IVFPQIndex {
     /// * `n_clusters` - Number of IVF partitions (typically sqrt(n) to 4*sqrt(n))
     /// * `n_subvectors` - Number of PQ subvectors (typically 8 for 128-dim)
     /// * `metric` - Distance metric for search
+    #[instrument(skip(vectors), fields(n = vectors.len(), n_clusters, n_subvectors))]
     pub fn build(
         vectors: Vec<Vector>,
         n_clusters: usize,
@@ -584,6 +586,7 @@ impl IVFPQIndex {
     /// # Arguments
     /// * `query` - Query vector
     /// * `k` - Number of neighbors to return
+    #[instrument(skip(self, query), fields(k, nprobe = self.nprobe.load(AtomicOrdering::Relaxed)))]
     pub fn search(&self, query: &[f32], k: usize) -> Vec<(u64, f32)> {
         // If re-ranking enabled, fetch more candidates
         let fetch_k = if self.original_vectors.is_some() {
@@ -1724,6 +1727,7 @@ impl IVFPQIndex {
     /// # Note
     /// If re-ranking is enabled, you should call `enable_reranking()` again
     /// with the updated vector set after inserting.
+    #[instrument(skip(self, vectors), fields(n = vectors.len()))]
     pub fn insert_batch(&mut self, vectors: Vec<Vector>) {
         if vectors.is_empty() {
             return;
@@ -1778,6 +1782,7 @@ impl IVFPQIndex {
     ///
     /// # Returns
     /// `true` if the vector was found and deleted, `false` if not found.
+    #[instrument(skip(self), fields(id))]
     pub fn delete(&mut self, id: u64) -> bool {
         // Find which partition contains this ID
         for partition_lock in &self.partitions {
