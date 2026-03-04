@@ -1,0 +1,16 @@
+[package]
+name = "forge-py"
+version.workspace = true
+edition.workspace = true
+description = "Python bindings for forge-db"
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "forge_py"
+crate-type = ["cdylib"]
+
+[dependencies]
+forge-db = { path = ".." }
+pyo3 = { version = "0.22", features = ["extension-module", "abi3-py38"] }
+numpy = "0.22"
