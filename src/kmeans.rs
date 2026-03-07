@@ -77,6 +77,121 @@ impl KMeans {
         }
     }
 
+    /// Fit the K-Means model on raw contiguous f32 data.
+    ///
+    /// Avoids `Vector`/`Arc<[f32]>` allocations — works directly on a flat
+    /// buffer where vector `i` occupies `data[i*dim..(i+1)*dim]`.
+    ///
+    /// This is significantly faster for PQ training where millions of
+    /// temporary subvectors would otherwise each allocate an Arc.
+    pub fn fit_raw(&mut self, data: &[f32], dim: usize, n: usize) {
+        if n == 0 || dim == 0 {
+            return;
+        }
+        debug_assert_eq!(data.len(), n * dim);
+
+        let get_row = |i: usize| -> &[f32] { &data[i * dim..(i + 1) * dim] };
+
+        // Initialize centroids
+        self.centroids = if self.k > KMEANSPP_THRESHOLD {
+            let mut rng = rand::thread_rng();
+            let mut indices: Vec<usize> = (0..n).collect();
+            indices.shuffle(&mut rng);
+            indices
+                .into_iter()
+                .take(self.k)
+                .map(|i| Vector::new(i as u64, get_row(i).to_vec()))
+                .collect()
+        } else {
+            // k-means++ on raw data
+            let mut rng = rand::thread_rng();
+            let mut centroids: Vec<Vector> = Vec::with_capacity(self.k);
+            let first = rng.gen_range(0..n);
+            centroids.push(Vector::new(0, get_row(first).to_vec()));
+
+            for c in 1..self.k {
+                let distances: Vec<f32> = (0..n)
+                    .into_par_iter()
+                    .map(|i| {
+                        centroids
+                            .iter()
+                            .map(|cent| euclidean_distance_squared(get_row(i), &cent.data))
+                            .fold(f32::MAX, f32::min)
+                    })
+                    .collect();
+
+                let total: f32 = distances.iter().sum();
+                if total == 0.0 {
+                    let idx = rng.gen_range(0..n);
+                    centroids.push(Vector::new(c as u64, get_row(idx).to_vec()));
+                    continue;
+                }
+
+                let mut r = rng.gen_range(0.0..total);
+                let mut selected = n - 1;
+                for (i, &d) in distances.iter().enumerate() {
+                    r -= d;
+                    if r <= 0.0 {
+                        selected = i;
+                        break;
+                    }
+                }
+                centroids.push(Vector::new(c as u64, get_row(selected).to_vec()));
+            }
+            centroids
+        };
+
+        // Iterate
+        for _iter in 0..self.max_iters {
+            // Assign
+            let assignments: Vec<usize> = (0..n)
+                .into_par_iter()
+                .map(|i| {
+                    let row = get_row(i);
+                    self.centroids
+                        .iter()
+                        .enumerate()
+                        .map(|(idx, c)| (idx, euclidean_distance_squared(row, &c.data)))
+                        .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+                        .unwrap()
+                        .0
+                })
+                .collect();
+
+            // Update centroids
+            let new_centroids: Vec<Vector> = (0..self.k)
+                .into_par_iter()
+                .map(|k| {
+                    let mut mean = vec![0.0f32; dim];
+                    let mut count = 0usize;
+                    for (i, &a) in assignments.iter().enumerate() {
+                        if a == k {
+                            let row = get_row(i);
+                            for (j, &val) in row.iter().enumerate() {
+                                mean[j] += val;
+                            }
+                            count += 1;
+                        }
+                    }
+                    if count == 0 {
+                        return self.centroids[k].clone();
+                    }
+                    let c = count as f32;
+                    for val in &mut mean {
+                        *val /= c;
+                    }
+                    Vector::new(k as u64, mean)
+                })
+                .collect();
+
+            let change = self.measure_change(&new_centroids);
+            self.centroids = new_centroids;
+            if change < CONVERGENCE_THRESHOLD {
+                break;
+            }
+        }
+    }
+
     /// Initialize centroids using k-means++ algorithm.
     ///
     /// Selects initial centroids with probability proportional to

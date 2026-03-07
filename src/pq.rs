@@ -64,24 +64,24 @@ impl ProductQuantizer {
 
         let subvector_dim = dim / n_subvectors;
 
+        let n = vectors.len();
+
         // Train codebooks in parallel for each subspace
+        // Uses fit_raw to avoid millions of Arc<[f32]> allocations
         let codebooks: Vec<Vec<Vector>> = (0..n_subvectors)
             .into_par_iter()
             .map(|m| {
-                // Extract m-th subvector from all training vectors
-                let subvectors: Vec<Vector> = vectors
-                    .iter()
-                    .map(|v| {
-                        let start = m * subvector_dim;
-                        let end = start + subvector_dim;
-                        let sub_data = v.data[start..end].to_vec();
-                        Vector::new(v.id, sub_data)
-                    })
-                    .collect();
+                // Extract m-th subvector from all training vectors into contiguous buffer
+                let mut sub_data = vec![0.0f32; n * subvector_dim];
+                for (i, v) in vectors.iter().enumerate() {
+                    let src_start = m * subvector_dim;
+                    sub_data[i * subvector_dim..(i + 1) * subvector_dim]
+                        .copy_from_slice(&v.data[src_start..src_start + subvector_dim]);
+                }
 
-                // Run k-means with k=256 centroids
+                // Run k-means with k=256 centroids on raw contiguous data
                 let mut kmeans = KMeans::new(CENTROIDS_8BIT, KMEANS_ITERATIONS);
-                kmeans.fit(&subvectors);
+                kmeans.fit_raw(&sub_data, subvector_dim, n);
                 kmeans.centroids
             })
             .collect();

@@ -324,6 +324,25 @@ impl HNSWIndex {
         }
     }
 
+    /// Bulk-build an HNSW index from a set of vectors.
+    ///
+    /// More efficient than calling `add()` repeatedly — inserts the first
+    /// `m*2` vectors sequentially to build initial graph connectivity, then
+    /// processes remaining vectors. Calls `finalize()` automatically.
+    pub fn build(
+        vectors: Vec<Vector>,
+        m: usize,
+        ef_construction: usize,
+        metric: DistanceMetric,
+    ) -> Self {
+        let mut index = Self::new(m, ef_construction, metric);
+        for vector in vectors {
+            index.add(vector);
+        }
+        index.finalize();
+        index
+    }
+
     /// Set the beam width for search operations.
     ///
     /// Higher values improve recall at the cost of speed.
@@ -425,14 +444,6 @@ impl HNSWIndex {
         }
     }
 
-    /// Get pointer to vector data for prefetching.
-    #[cfg(target_arch = "x86_64")]
-    #[inline(always)]
-    fn get_vector_ptr(&self, node_id: NodeIndex) -> *const f32 {
-        let start = node_id * self.dim;
-        self.vector_data.as_ptr().wrapping_add(start)
-    }
-
     /// Get vector data for a node.
     #[inline(always)]
     fn get_vector_data(&self, node_id: NodeIndex) -> &[f32] {
@@ -454,19 +465,19 @@ impl HNSWIndex {
     }
 
     /// Prefetch vector data for upcoming distance computations.
-    ///
-    /// # Safety
-    /// Uses x86_64 prefetch intrinsics. Safe because:
-    /// - Prefetch hints are advisory - invalid addresses are ignored
-    /// - We verify the pointer is within our allocated vector_data
-    #[cfg(target_arch = "x86_64")]
     #[inline(always)]
     fn prefetch_vector(&self, node_id: NodeIndex) {
-        let ptr = self.get_vector_ptr(node_id);
-        // SAFETY: _mm_prefetch is safe with any pointer - it's just a hint
-        // to the CPU. Invalid addresses result in no-op, not crashes.
+        let start = node_id * self.dim;
+        let ptr = unsafe { self.vector_data.as_ptr().add(start) };
+
+        #[cfg(target_arch = "x86_64")]
         unsafe {
             _mm_prefetch(ptr as *const i8, _MM_HINT_T0);
+        }
+
+        #[cfg(target_arch = "aarch64")]
+        unsafe {
+            std::arch::asm!("prfm pldl1keep, [{ptr}]", ptr = in(reg) ptr, options(nostack, preserves_flags));
         }
     }
 
@@ -680,7 +691,7 @@ impl HNSWIndex {
     }
 
     /// Prefetch neighbor vectors from a slice of NodeIds.
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
     #[inline(always)]
     fn prefetch_neighbors_from_slice(&self, neighbors: &[NodeId]) {
         for &neighbor_id in neighbors.iter().take(4) {
@@ -688,8 +699,8 @@ impl HNSWIndex {
         }
     }
 
-    /// No-op on non-x86_64 platforms.
-    #[cfg(not(target_arch = "x86_64"))]
+    /// No-op on platforms without prefetch support.
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
     #[inline(always)]
     fn prefetch_neighbors_from_slice(&self, _neighbors: &[NodeId]) {}
 
