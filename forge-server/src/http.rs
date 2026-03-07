@@ -314,6 +314,8 @@ async fn search_handler(
         .total_searches
         .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
+    metrics::histogram!("forge_search_latency_seconds", "collection" => name.clone()).record(start.elapsed().as_secs_f64());
+
     Json(SearchResponse {
         results,
         latency_ms,
@@ -411,6 +413,8 @@ async fn upsert_handler(
         .total_upserts
         .fetch_add(count as u64, std::sync::atomic::Ordering::Relaxed);
 
+    metrics::counter!("forge_upsert_total", "collection" => name.clone()).increment(count as u64);
+
     Json(serde_json::json!({ "upserted": count })).into_response()
 }
 
@@ -447,6 +451,8 @@ async fn delete_vectors_handler(
             let _ = wal.append(&forge_db::WalOperation::Delete { id });
         }
     }
+
+    metrics::counter!("forge_delete_total", "collection" => name.clone()).increment(deleted);
 
     Json(serde_json::json!({ "deleted": deleted })).into_response()
 }
@@ -617,7 +623,9 @@ async fn stats_handler(State(state): State<AppStateArc>) -> impl IntoResponse {
 // ─────────────────────────────────────────────────────────────────────────────
 
 pub fn build_router(state: Arc<AppState>, config: ForgeConfig) -> Router {
-    Router::new()
+    let rps = config.server.requests_per_second;
+
+    let mut app = Router::new()
         .route("/health", get(health_handler))
         .route("/v1/stats", get(stats_handler))
         .route("/v1/collections", get(list_collections_handler))
@@ -637,7 +645,16 @@ pub fn build_router(state: Arc<AppState>, config: ForgeConfig) -> Router {
         .layer(CorsLayer::permissive())
         .layer(HttpTimeoutLayer::new(std::time::Duration::from_secs(30)))
         .layer(RequestBodyLimitLayer::new(256 * 1024 * 1024)) // 256 MiB
-        .with_state(state)
+        .with_state(state);
+
+    // Apply rate limiting if configured (requests_per_second > 0).
+    // Uses ConcurrencyLimitLayer because tower's RateLimitLayer does not
+    // produce a Clone service, which axum requires.
+    if rps > 0 {
+        app = app.layer(tower::limit::ConcurrencyLimitLayer::new(rps as usize));
+    }
+
+    app
 }
 
 /// Start the HTTP/REST server with graceful shutdown support.

@@ -98,6 +98,10 @@ harness = false
 name = "pq_bench"
 harness = false
 
+[[bench]]
+name = "e2e_bench"
+harness = false
+
 [[example]]
 name = "measure_recall"
 

@@ -128,6 +128,8 @@ impl ForgeService for ForgeServiceImpl {
             .total_upserts
             .fetch_add(count, Ordering::Relaxed);
 
+        metrics::counter!("forge_upsert_total", "collection" => req.collection.clone()).increment(count);
+
         Ok(Response::new(UpsertResponse {
             upserted_count: count,
             failed_ids: vec![],
@@ -164,6 +166,8 @@ impl ForgeService for ForgeServiceImpl {
         }
 
         self.state.stats.total_deletes.fetch_add(deleted, Ordering::Relaxed);
+
+        metrics::counter!("forge_delete_total", "collection" => req.collection.clone()).increment(deleted);
 
         Ok(Response::new(DeleteResponse { deleted_count: deleted }))
     }
@@ -204,6 +208,8 @@ impl ForgeService for ForgeServiceImpl {
 
         self.state.stats.total_searches.fetch_add(1, Ordering::Relaxed);
         self.state.stats.search_latency_sum_us.fetch_add(elapsed_us, Ordering::Relaxed);
+
+        metrics::histogram!("forge_search_latency_seconds", "collection" => req.collection.clone()).record(start.elapsed().as_secs_f64());
 
         Ok(Response::new(SearchResponse {
             results,
@@ -501,7 +507,7 @@ pub async fn serve(
             tls = tls.client_ca_root(ca);
         }
 
-        return Server::builder()
+        let mut tls_builder = Server::builder()
             .tls_config(tls)
             .map_err(|e| anyhow::anyhow!("TLS config error: {e}"))?
             .tcp_keepalive(Some(Duration::from_secs(60)))
@@ -509,22 +515,52 @@ pub async fn serve(
             .http2_keepalive_interval(Some(Duration::from_secs(30)))
             .http2_keepalive_timeout(Some(Duration::from_secs(10)))
             .concurrency_limit_per_connection(config.server.max_concurrency)
-            .initial_connection_window_size(Some(4 * 1024 * 1024)) // 4 MiB
-            .initial_stream_window_size(Some(2 * 1024 * 1024)) // 2 MiB
+            .initial_connection_window_size(Some(4 * 1024 * 1024))
+            .initial_stream_window_size(Some(2 * 1024 * 1024));
+
+        // Apply rate limiting if configured. Uses ConcurrencyLimitLayer because
+        // tower's RateLimitLayer does not produce a Clone service, which tonic requires.
+        if config.server.requests_per_second > 0 {
+            return tls_builder
+                .layer(tower::limit::ConcurrencyLimitLayer::new(
+                    config.server.requests_per_second as usize,
+                ))
+                .add_service(svc)
+                .serve_with_shutdown(addr, shutdown)
+                .await
+                .map_err(|e| anyhow::anyhow!("gRPC server error: {e}"));
+        }
+
+        return tls_builder
             .add_service(svc)
             .serve_with_shutdown(addr, shutdown)
             .await
             .map_err(|e| anyhow::anyhow!("gRPC server error: {e}"));
     }
 
-    Server::builder()
+    let mut builder = Server::builder()
         .tcp_keepalive(Some(Duration::from_secs(60)))
         .tcp_nodelay(true)
         .http2_keepalive_interval(Some(Duration::from_secs(30)))
         .http2_keepalive_timeout(Some(Duration::from_secs(10)))
         .concurrency_limit_per_connection(config.server.max_concurrency)
-        .initial_connection_window_size(Some(4 * 1024 * 1024)) // 4 MiB
-        .initial_stream_window_size(Some(2 * 1024 * 1024)) // 2 MiB
+        .initial_connection_window_size(Some(4 * 1024 * 1024))
+        .initial_stream_window_size(Some(2 * 1024 * 1024));
+
+    // Apply rate limiting if configured. Uses ConcurrencyLimitLayer because
+    // tower's RateLimitLayer does not produce a Clone service, which tonic requires.
+    if config.server.requests_per_second > 0 {
+        return builder
+            .layer(tower::limit::ConcurrencyLimitLayer::new(
+                config.server.requests_per_second as usize,
+            ))
+            .add_service(svc)
+            .serve_with_shutdown(addr, shutdown)
+            .await
+            .map_err(|e| anyhow::anyhow!("gRPC server error: {e}"));
+    }
+
+    builder
         .add_service(svc)
         .serve_with_shutdown(addr, shutdown)
         .await

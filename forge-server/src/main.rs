@@ -89,6 +89,17 @@ async fn main() -> anyhow::Result<()> {
 
     info!(addr = %metrics_addr, "Prometheus metrics endpoint");
 
+    // Health monitoring task
+    let health_state = state.clone();
+    let health_config = config.clone();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+        loop {
+            interval.tick().await;
+            check_index_health(&health_state, &health_config);
+        }
+    });
+
     // Launch gRPC server
     let grpc_addr: std::net::SocketAddr = config
         .server
@@ -168,6 +179,35 @@ async fn main() -> anyhow::Result<()> {
 
     info!("forge-server stopped");
     Ok(())
+}
+
+/// Periodic health check: emit per-collection metrics and warn on high memory usage.
+fn check_index_health(state: &state::AppState, config: &forge_db::ForgeConfig) {
+    use tracing::warn;
+
+    for entry in state.collections.iter() {
+        let name = entry.key();
+        let coll = entry.value().read();
+
+        let len = coll.len();
+        let mem = coll.memory_bytes();
+
+        // Log collection stats
+        metrics::gauge!("forge_vectors_total", "collection" => name.clone()).set(len as f64);
+        metrics::gauge!("forge_memory_bytes", "collection" => name.clone()).set(mem as f64);
+    }
+
+    // Warn if memory is approaching limit
+    let total_mem: usize = state.collections.iter()
+        .map(|e| e.value().read().memory_bytes())
+        .sum();
+    if total_mem > config.max_memory_bytes * 80 / 100 {
+        warn!(
+            total_memory = total_mem,
+            limit = config.max_memory_bytes,
+            "memory usage above 80% of limit"
+        );
+    }
 }
 
 /// Wait for SIGINT or SIGTERM.

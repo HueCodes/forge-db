@@ -325,6 +325,9 @@ pub struct ServerConfig {
 
     /// API key authentication (optional).
     pub auth: Option<AuthConfig>,
+
+    /// Rate limit in requests per second. 0 = disabled.
+    pub requests_per_second: u64,
 }
 
 impl Default for ServerConfig {
@@ -336,6 +339,7 @@ impl Default for ServerConfig {
             request_timeout_ms: 30_000,
             tls: None,
             auth: None,
+            requests_per_second: 0,
         }
     }
 }
