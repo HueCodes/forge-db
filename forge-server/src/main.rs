@@ -102,11 +102,18 @@ async fn main() -> anyhow::Result<()> {
         .parse()
         .context("parsing HTTP bind address")?;
 
+    // Create a watch channel to broadcast shutdown to both servers.
+    let (shutdown_tx, _) = tokio::sync::watch::channel(false);
+
     let grpc_task = {
         let state = state.clone();
         let cfg = config.clone();
+        let mut shutdown_rx = shutdown_tx.subscribe();
         tokio::spawn(async move {
-            grpc::serve(grpc_addr, state, cfg)
+            let shutdown_fut = async move {
+                let _ = shutdown_rx.wait_for(|&v| v).await;
+            };
+            grpc::serve(grpc_addr, state, cfg, shutdown_fut)
                 .await
                 .context("gRPC server error")
         })
@@ -115,27 +122,47 @@ async fn main() -> anyhow::Result<()> {
     let http_task = {
         let state = state.clone();
         let cfg = config.clone();
+        let mut shutdown_rx = shutdown_tx.subscribe();
         tokio::spawn(async move {
-            http::serve(http_addr, state, cfg)
+            let shutdown_fut = async move {
+                let _ = shutdown_rx.wait_for(|&v| v).await;
+            };
+            http::serve(http_addr, state, cfg, shutdown_fut)
                 .await
                 .context("HTTP server error")
         })
     };
 
-    // Wait for shutdown signal
-    tokio::select! {
-        res = grpc_task => {
-            if let Ok(Err(e)) = res {
-                tracing::error!(error = %e, "gRPC server exited with error");
-            }
+    // Wait for shutdown signal, then notify both servers.
+    shutdown_signal().await;
+    info!("shutdown signal received, stopping servers");
+    let _ = shutdown_tx.send(true);
+
+    // Wait for both servers to finish draining.
+    let (grpc_res, http_res) = tokio::join!(grpc_task, http_task);
+    if let Ok(Err(e)) = grpc_res {
+        tracing::error!(error = %e, "gRPC server exited with error");
+    }
+    if let Ok(Err(e)) = http_res {
+        tracing::error!(error = %e, "HTTP server exited with error");
+    }
+
+    // Flush WAL and save all collections to disk.
+    info!("flushing WAL and saving collections to disk");
+    {
+        let mut wal = state.wal.lock();
+        let seq = wal.next_sequence();
+        if let Err(e) = wal.checkpoint(seq.saturating_sub(1)) {
+            tracing::error!(error = %e, "failed to checkpoint WAL during shutdown");
         }
-        res = http_task => {
-            if let Ok(Err(e)) = res {
-                tracing::error!(error = %e, "HTTP server exited with error");
-            }
-        }
-        _ = shutdown_signal() => {
-            info!("shutdown signal received, stopping servers");
+    }
+    for entry in state.collections.iter() {
+        let name = entry.key();
+        let coll = entry.value();
+        if let Err(e) = coll.read().save_to_disk(&config.data_dir) {
+            tracing::error!(collection = %name, error = %e, "failed to save collection during shutdown");
+        } else {
+            info!(collection = %name, "collection saved to disk");
         }
     }
 

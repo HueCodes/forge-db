@@ -24,6 +24,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Instant;
 
+use rayon::prelude::*;
 use axum::{
     extract::{Path, State},
     http::{HeaderMap, StatusCode},
@@ -469,20 +470,18 @@ async fn batch_search_handler(
     let start = Instant::now();
     let queries = body.queries.clone();
     let all_results = match tokio::task::spawn_blocking(move || {
-        let mut results = Vec::with_capacity(queries.len());
-        for q in &queries {
+        queries.par_iter().map(|q| {
             let (raw, _) = coll.read().search(&q.query, q.top_k);
             let items: Vec<SearchResult> = raw
                 .into_iter()
                 .map(|(id, distance)| SearchResult { id, distance, metadata: None })
                 .collect();
-            results.push(SearchResponse {
+            SearchResponse {
                 results: items,
                 latency_ms: 0.0,
                 vectors_scanned: 0,
-            });
-        }
-        results
+            }
+        }).collect::<Vec<_>>()
     })
     .await
     {
@@ -641,11 +640,12 @@ pub fn build_router(state: Arc<AppState>, config: ForgeConfig) -> Router {
         .with_state(state)
 }
 
-/// Start the HTTP/REST server.
+/// Start the HTTP/REST server with graceful shutdown support.
 pub async fn serve(
     addr: SocketAddr,
     state: Arc<AppState>,
     config: ForgeConfig,
+    shutdown: impl std::future::Future<Output = ()> + Send + 'static,
 ) -> anyhow::Result<()> {
     let app = build_router(state, config);
 
@@ -653,6 +653,7 @@ pub async fn serve(
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown)
         .await
         .map_err(|e| anyhow::anyhow!("HTTP server error: {e}"))
 }

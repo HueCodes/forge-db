@@ -49,8 +49,14 @@ thiserror = { workspace = true }
 signal-hook = "0.3"
 signal-hook-tokio = { version = "0.3", features = ["futures-v0_3"] }
 
+# Parallelism
+rayon = "1.8"
+
 # Locking
 parking_lot = "0.12"
+
+# Concurrent map
+dashmap = "6"
 
 # Crypto for API key hashing
 sha2 = "0.10"

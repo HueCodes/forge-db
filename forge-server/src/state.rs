@@ -1,11 +1,11 @@
 //! Shared application state for the forge-server.
 
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::SystemTime;
 
 use anyhow::Context;
+use dashmap::DashMap;
 use parking_lot::{Mutex, RwLock};
 use tracing::{info, warn};
 
@@ -62,7 +62,7 @@ impl ServerStats {
 /// Shared application state, accessible from all request handlers.
 pub struct AppState {
     /// All active collections, keyed by name.
-    pub collections: RwLock<HashMap<String, Arc<RwLock<Collection>>>>,
+    pub collections: DashMap<String, Arc<RwLock<Collection>>>,
     /// Server configuration.
     #[allow(dead_code)]
     pub config: ForgeConfig,
@@ -83,7 +83,7 @@ impl AppState {
         let wal = WriteAheadLog::open(&wal_dir)
             .with_context(|| format!("opening WAL at {}", wal_dir.display()))?;
 
-        let mut collections: HashMap<String, Arc<RwLock<Collection>>> = HashMap::new();
+        let collections: DashMap<String, Arc<RwLock<Collection>>> = DashMap::new();
 
         // Load any persisted collections
         let data_dir = config.data_dir.clone();
@@ -118,7 +118,7 @@ impl AppState {
         }
 
         Ok(Self {
-            collections: RwLock::new(collections),
+            collections,
             config,
             stats: Arc::new(ServerStats::new()),
             wal: Arc::new(Mutex::new(wal)),
@@ -127,7 +127,7 @@ impl AppState {
 
     /// Get a collection by name.
     pub fn get_collection(&self, name: &str) -> Option<Arc<RwLock<Collection>>> {
-        self.collections.read().get(name).cloned()
+        self.collections.get(name).map(|r| r.value().clone())
     }
 
     /// Create a new collection.
@@ -137,40 +137,39 @@ impl AppState {
         collection: Collection,
     ) -> Result<(), String> {
         let name = name.into();
-        let mut collections = self.collections.write();
-        if collections.contains_key(&name) {
-            return Err(format!("collection '{name}' already exists"));
+        use dashmap::mapref::entry::Entry;
+        match self.collections.entry(name.clone()) {
+            Entry::Occupied(_) => Err(format!("collection '{name}' already exists")),
+            Entry::Vacant(entry) => {
+                entry.insert(Arc::new(RwLock::new(collection)));
+                Ok(())
+            }
         }
-        collections.insert(name, Arc::new(RwLock::new(collection)));
-        Ok(())
     }
 
     /// Drop a collection by name.
     pub fn drop_collection(&self, name: &str) -> bool {
-        let mut collections = self.collections.write();
-        collections.remove(name).is_some()
+        self.collections.remove(name).is_some()
     }
 
     /// List all collection names.
     pub fn list_collections(&self) -> Vec<String> {
-        self.collections.read().keys().cloned().collect()
+        self.collections.iter().map(|r| r.key().clone()).collect()
     }
 
     /// Total number of vectors across all collections.
     pub fn total_vectors(&self) -> u64 {
         self.collections
-            .read()
-            .values()
-            .map(|c| c.read().len() as u64)
+            .iter()
+            .map(|r| r.value().read().len() as u64)
             .sum()
     }
 
     /// Total memory usage estimate.
     pub fn total_memory_bytes(&self) -> u64 {
         self.collections
-            .read()
-            .values()
-            .map(|c| c.read().memory_bytes() as u64)
+            .iter()
+            .map(|r| r.value().read().memory_bytes() as u64)
             .sum()
     }
 }

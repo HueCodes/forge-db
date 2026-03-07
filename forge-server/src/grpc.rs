@@ -3,8 +3,9 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
+use rayon::prelude::*;
 use tonic::{Request, Response, Status};
 use tonic::transport::Server;
 use tracing::{info, instrument, warn};
@@ -229,23 +230,21 @@ impl ForgeService for ForgeServiceImpl {
         let start = Instant::now();
         let queries = req.queries.clone();
         let all_results = tokio::task::spawn_blocking(move || {
-            let mut results = Vec::with_capacity(queries.len());
-            for query in &queries {
+            queries.par_iter().map(|query| {
                 let (raw, latency_us) = coll.read().search(&query.query, query.top_k as usize);
                 let items: Vec<SearchResultItem> = raw
                     .into_iter()
                     .map(|(id, distance)| SearchResultItem { id, distance, metadata_json: String::new() })
                     .collect();
-                results.push(SearchResponse {
+                SearchResponse {
                     results: items,
                     stats: Some(SearchStats {
                         latency_ms: latency_us as f32 / 1000.0,
                         vectors_scanned: 0,
                         partitions_probed: 0,
                     }),
-                });
-            }
-            results
+                }
+            }).collect()
         })
         .await
         .map_err(|e| Status::internal(format!("batch_search task panicked: {e}")))?;
@@ -383,22 +382,20 @@ impl ForgeService for ForgeServiceImpl {
         let req = request.into_inner();
 
         let data_dir = self.config.data_dir.clone();
-        let collections = self.state.collections.read();
 
         let target: Vec<String> = if req.collection.is_empty() {
-            collections.keys().cloned().collect()
+            self.state.collections.iter().map(|r| r.key().clone()).collect()
         } else {
             vec![req.collection.clone()]
         };
 
         for name in &target {
-            if let Some(coll) = collections.get(name) {
-                if let Err(e) = coll.read().save_to_disk(&data_dir) {
+            if let Some(coll) = self.state.collections.get(name) {
+                if let Err(e) = coll.value().read().save_to_disk(&data_dir) {
                     warn!(collection = %name, error = %e, "failed to save collection");
                 }
             }
         }
-        drop(collections);
 
         let seq = {
             let mut wal = self.state.wal.lock();
@@ -475,11 +472,12 @@ impl ForgeService for ForgeServiceImpl {
     }
 }
 
-/// Start the gRPC server.
+/// Start the gRPC server with graceful shutdown support.
 pub async fn serve(
     addr: SocketAddr,
     state: Arc<AppState>,
     config: ForgeConfig,
+    shutdown: impl std::future::Future<Output = ()> + Send + 'static,
 ) -> anyhow::Result<()> {
     let service = ForgeServiceImpl::new(Arc::clone(&state), config.clone());
     let svc = ForgeServiceServer::new(service);
@@ -506,15 +504,29 @@ pub async fn serve(
         return Server::builder()
             .tls_config(tls)
             .map_err(|e| anyhow::anyhow!("TLS config error: {e}"))?
+            .tcp_keepalive(Some(Duration::from_secs(60)))
+            .tcp_nodelay(true)
+            .http2_keepalive_interval(Some(Duration::from_secs(30)))
+            .http2_keepalive_timeout(Some(Duration::from_secs(10)))
+            .concurrency_limit_per_connection(config.server.max_concurrency)
+            .initial_connection_window_size(Some(4 * 1024 * 1024)) // 4 MiB
+            .initial_stream_window_size(Some(2 * 1024 * 1024)) // 2 MiB
             .add_service(svc)
-            .serve(addr)
+            .serve_with_shutdown(addr, shutdown)
             .await
             .map_err(|e| anyhow::anyhow!("gRPC server error: {e}"));
     }
 
     Server::builder()
+        .tcp_keepalive(Some(Duration::from_secs(60)))
+        .tcp_nodelay(true)
+        .http2_keepalive_interval(Some(Duration::from_secs(30)))
+        .http2_keepalive_timeout(Some(Duration::from_secs(10)))
+        .concurrency_limit_per_connection(config.server.max_concurrency)
+        .initial_connection_window_size(Some(4 * 1024 * 1024)) // 4 MiB
+        .initial_stream_window_size(Some(2 * 1024 * 1024)) // 2 MiB
         .add_service(svc)
-        .serve(addr)
+        .serve_with_shutdown(addr, shutdown)
         .await
         .map_err(|e| anyhow::anyhow!("gRPC server error: {e}"))
 }
