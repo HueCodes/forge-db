@@ -120,3 +120,6 @@ name = "hnsw_recall"
 [[example]]
 name = "getting_started"
 path = "examples/getting_started.rs"
+
+[[example]]
+name = "memory_usage"

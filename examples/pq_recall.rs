@@ -48,6 +48,12 @@ fn main() {
         duration.as_millis() as f64 / dataset.queries.len() as f64
     );
 
+    assert!(
+        avg_recall >= 0.50,
+        "Pure PQ Recall@10 ({:.2}%) should be >= 50%",
+        avg_recall * 100.0
+    );
+
     // =====================
     // IVF-PQ
     // =====================
@@ -81,8 +87,19 @@ fn main() {
             avg_recall * 100.0,
             qps
         );
+
+        // Assert minimum recall quality at high nprobe
+        if nprobe >= 16 {
+            assert!(
+                avg_recall >= 0.50,
+                "IVF-PQ Recall@10 ({:.2}%) should be >= 50% with nprobe={}",
+                avg_recall * 100.0,
+                nprobe
+            );
+        }
     }
 
+    println!("\nAll recall assertions passed!");
     println!("\n=== Memory Comparison ===");
     let dim = 128;
     let n_vectors = dataset.vectors.len();

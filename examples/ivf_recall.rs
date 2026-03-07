@@ -62,6 +62,17 @@ fn main() {
                 avg_recall * 100.0,
                 qps
             );
+
+            // Assert minimum recall quality at high nprobe
+            if nprobe >= 32 {
+                assert!(
+                    avg_recall >= 0.80,
+                    "Recall@10 ({:.2}%) should be >= 80% with nprobe={}, clusters={}",
+                    avg_recall * 100.0,
+                    nprobe,
+                    n_clusters
+                );
+            }
         }
 
         println!();
@@ -111,7 +122,18 @@ fn main() {
             avg_recall * 100.0,
             qps
         );
+
+        // Assert minimum recall quality at high nprobe
+        if nprobe >= 64 {
+            assert!(
+                avg_recall >= 0.80,
+                "Large-scale Recall@10 ({:.2}%) should be >= 80% with nprobe={}",
+                avg_recall * 100.0,
+                nprobe
+            );
+        }
     }
 
+    println!("\nAll recall assertions passed!");
     println!("\n=== Evaluation Complete ===");
 }
