@@ -40,6 +40,7 @@ impl ForgeServiceImpl {
         Self { state, config }
     }
 
+    #[allow(clippy::result_large_err)]
     fn authenticate<T>(&self, req: &Request<T>) -> Result<(), Status> {
         let auth_config = match &self.config.server.auth {
             Some(auth) if auth.required => auth,

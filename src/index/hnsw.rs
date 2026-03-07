@@ -39,6 +39,38 @@ use tracing::instrument;
 #[cfg(target_arch = "x86_64")]
 use std::arch::x86_64::{_mm_prefetch, _MM_HINT_T0};
 
+/// Bitset for tracking visited nodes during graph traversal.
+///
+/// Uses 1 bit per node instead of 1 byte (Vec<bool>), reducing memory
+/// usage by 8x. For 1M vectors: 128KB instead of 1MB per search.
+struct VisitedSet {
+    bits: Vec<u64>,
+}
+
+impl VisitedSet {
+    /// Create a new visited set with capacity for `n` nodes.
+    #[inline]
+    fn new(n: usize) -> Self {
+        Self {
+            bits: vec![0u64; n.div_ceil(64)],
+        }
+    }
+
+    /// Mark a node as visited. Returns true if it was already visited.
+    #[inline(always)]
+    fn set(&mut self, idx: usize) -> bool {
+        let word = idx >> 6;
+        let bit = idx & 63;
+        let mask = 1u64 << bit;
+        unsafe {
+            let w = self.bits.get_unchecked_mut(word);
+            let was_set = *w & mask != 0;
+            *w |= mask;
+            was_set
+        }
+    }
+}
+
 /// Compact node identifier (u32 saves 50% memory vs u64 on edges).
 /// Supports up to 4 billion vectors per index.
 type NodeId = u32;
@@ -447,13 +479,12 @@ impl HNSWIndex {
     ) -> Vec<NodeIndex> {
         let query = self.get_vector_data(query_node);
 
-        let mut visited = vec![false; self.graph.len()];
+        let mut visited = VisitedSet::new(self.graph.len());
         let mut candidates: BinaryHeap<Reverse<ScoredNode>> = BinaryHeap::with_capacity(ef);
         let mut results: BinaryHeap<ScoredNode> = BinaryHeap::with_capacity(ef + 1);
 
         for &ep in entry_points {
-            if !visited[ep] {
-                visited[ep] = true;
+            if !visited.set(ep) {
                 let dist = self.metric.compute(query, self.get_vector_data(ep));
                 candidates.push(Reverse(ScoredNode {
                     id: ep,
@@ -483,8 +514,7 @@ impl HNSWIndex {
 
             for neighbor in neighbors {
                 let neighbor_idx = neighbor as NodeIndex;
-                if !visited[neighbor_idx] {
-                    visited[neighbor_idx] = true;
+                if !visited.set(neighbor_idx) {
                     let neighbor_dist = self
                         .metric
                         .compute(query, self.get_vector_data(neighbor_idx));
@@ -681,11 +711,11 @@ impl HNSWIndex {
         n: usize,
         flat_graph: &FlatGraph,
     ) -> Vec<(u64, f32)> {
-        let mut visited = vec![false; n];
+        let mut visited = VisitedSet::new(n);
         let mut candidates: BinaryHeap<Reverse<ScoredNode>> = BinaryHeap::with_capacity(ef);
         let mut results: BinaryHeap<ScoredNode> = BinaryHeap::with_capacity(ef + 1);
 
-        visited[ep_id] = true;
+        visited.set(ep_id);
         candidates.push(Reverse(ScoredNode {
             id: ep_id,
             distance: ep_dist,
@@ -708,8 +738,7 @@ impl HNSWIndex {
 
             for &neighbor in neighbors {
                 let neighbor_idx = neighbor as NodeIndex;
-                if !visited[neighbor_idx] {
-                    visited[neighbor_idx] = true;
+                if !visited.set(neighbor_idx) {
 
                     let neighbor_dist = self.distance_query(query, neighbor_idx);
                     let worst_dist = results.peek().map(|n| n.distance).unwrap_or(f32::MAX);
@@ -774,13 +803,12 @@ impl HNSWIndex {
         ef: usize,
         layer: usize,
     ) -> Vec<NodeIndex> {
-        let mut visited = vec![false; self.graph.len()];
+        let mut visited = VisitedSet::new(self.graph.len());
         let mut candidates: BinaryHeap<Reverse<ScoredNode>> = BinaryHeap::with_capacity(ef);
         let mut results: BinaryHeap<ScoredNode> = BinaryHeap::with_capacity(ef + 1);
 
         for &ep in entry_points {
-            if !visited[ep] {
-                visited[ep] = true;
+            if !visited.set(ep) {
                 let dist = self.distance_query(query, ep);
                 candidates.push(Reverse(ScoredNode {
                     id: ep,
@@ -810,8 +838,7 @@ impl HNSWIndex {
 
             for neighbor in neighbors {
                 let neighbor_idx = neighbor as NodeIndex;
-                if !visited[neighbor_idx] {
-                    visited[neighbor_idx] = true;
+                if !visited.set(neighbor_idx) {
                     let neighbor_dist = self.distance_query(query, neighbor_idx);
                     let worst_dist = results.peek().map(|n| n.distance).unwrap_or(f32::MAX);
 

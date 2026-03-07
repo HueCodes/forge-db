@@ -232,6 +232,11 @@ impl Collection {
         self.index.len()
     }
 
+    /// Returns true if the collection contains no vectors.
+    pub fn is_empty(&self) -> bool {
+        self.index.len() == 0
+    }
+
     /// Estimated memory usage in bytes.
     pub fn memory_bytes(&self) -> usize {
         self.index.memory_bytes()

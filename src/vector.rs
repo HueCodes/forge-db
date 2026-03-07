@@ -245,6 +245,36 @@ impl VectorStore {
         self.len = 0;
     }
 
+    /// Remove a vector by index using swap-remove (O(1)).
+    ///
+    /// Swaps the vector at `index` with the last vector, then removes the last.
+    /// This is O(1) but changes the order of vectors. Returns the removed ID.
+    ///
+    /// # Panics
+    /// Panics if `index >= self.len`.
+    #[inline]
+    pub fn swap_remove(&mut self, index: usize) -> u64 {
+        assert!(index < self.len, "Index {} out of bounds (len={})", index, self.len);
+        let removed_id = self.ids.swap_remove(index);
+        let last = self.len - 1;
+        if index != last {
+            let src_start = last * self.dim;
+            let dst_start = index * self.dim;
+            for i in 0..self.dim {
+                self.data[dst_start + i] = self.data[src_start + i];
+            }
+        }
+        self.data.truncate(last * self.dim);
+        self.len -= 1;
+        removed_id
+    }
+
+    /// Find the index of a vector by its ID. Returns None if not found.
+    #[inline]
+    pub fn find_id(&self, id: u64) -> Option<usize> {
+        self.ids.iter().position(|&x| x == id)
+    }
+
     /// Shrink the internal buffers to fit the current data.
     #[inline]
     pub fn shrink_to_fit(&mut self) {

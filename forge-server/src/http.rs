@@ -238,7 +238,7 @@ async fn create_collection_handler(
     axum::extract::Extension(config): axum::extract::Extension<ForgeConfig>,
     Json(body): Json<CreateCollectionBody>,
 ) -> impl IntoResponse {
-    if let Err(_) = check_auth(&headers, &config) {
+    if check_auth(&headers, &config).is_err() {
         return api_error(StatusCode::UNAUTHORIZED, "unauthorized").into_response();
     }
 
@@ -279,7 +279,7 @@ async fn search_handler(
     Path(name): Path<String>,
     Json(body): Json<SearchBody>,
 ) -> impl IntoResponse {
-    if let Err(_) = check_auth(&headers, &config) {
+    if check_auth(&headers, &config).is_err() {
         return api_error(StatusCode::UNAUTHORIZED, "unauthorized").into_response();
     }
 
@@ -348,7 +348,7 @@ async fn drop_collection_handler(
     axum::extract::Extension(config): axum::extract::Extension<ForgeConfig>,
     Path(name): Path<String>,
 ) -> impl IntoResponse {
-    if let Err(_) = check_auth(&headers, &config) {
+    if check_auth(&headers, &config).is_err() {
         return api_error(StatusCode::UNAUTHORIZED, "unauthorized").into_response();
     }
 
@@ -363,7 +363,7 @@ async fn upsert_handler(
     Path(name): Path<String>,
     Json(body): Json<UpsertBody>,
 ) -> impl IntoResponse {
-    if let Err(_) = check_auth(&headers, &config) {
+    if check_auth(&headers, &config).is_err() {
         return api_error(StatusCode::UNAUTHORIZED, "unauthorized").into_response();
     }
 
@@ -420,7 +420,7 @@ async fn delete_vectors_handler(
     Path(name): Path<String>,
     Json(body): Json<DeleteVectorsBody>,
 ) -> impl IntoResponse {
-    if let Err(_) = check_auth(&headers, &config) {
+    if check_auth(&headers, &config).is_err() {
         return api_error(StatusCode::UNAUTHORIZED, "unauthorized").into_response();
     }
 
@@ -457,7 +457,7 @@ async fn batch_search_handler(
     Path(name): Path<String>,
     Json(body): Json<BatchSearchBody>,
 ) -> impl IntoResponse {
-    if let Err(_) = check_auth(&headers, &config) {
+    if check_auth(&headers, &config).is_err() {
         return api_error(StatusCode::UNAUTHORIZED, "unauthorized").into_response();
     }
 
@@ -510,7 +510,7 @@ async fn build_index_handler(
     Path(name): Path<String>,
     Json(body): Json<BuildIndexBody>,
 ) -> impl IntoResponse {
-    if let Err(_) = check_auth(&headers, &config) {
+    if check_auth(&headers, &config).is_err() {
         return api_error(StatusCode::UNAUTHORIZED, "unauthorized").into_response();
     }
 
@@ -548,7 +548,7 @@ async fn checkpoint_handler(
     axum::extract::Extension(config): axum::extract::Extension<ForgeConfig>,
     Path(name): Path<String>,
 ) -> impl IntoResponse {
-    if let Err(_) = check_auth(&headers, &config) {
+    if check_auth(&headers, &config).is_err() {
         return api_error(StatusCode::UNAUTHORIZED, "unauthorized").into_response();
     }
 
@@ -575,7 +575,7 @@ async fn compact_handler(
     axum::extract::Extension(config): axum::extract::Extension<ForgeConfig>,
     Path(name): Path<String>,
 ) -> impl IntoResponse {
-    if let Err(_) = check_auth(&headers, &config) {
+    if check_auth(&headers, &config).is_err() {
         return api_error(StatusCode::UNAUTHORIZED, "unauthorized").into_response();
     }
 

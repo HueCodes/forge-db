@@ -222,6 +222,60 @@ pub unsafe fn dot_product_avx512(a: &[f32], b: &[f32]) -> f32 {
     total
 }
 
+/// Compute cosine distance using AVX-512 intrinsics.
+///
+/// Computes dot product and norms in a single pass:
+/// `cosine_distance = 1 - (a · b) / (||a|| * ||b||)`
+///
+/// # Safety
+/// - Requires AVX-512F CPU feature to be available.
+/// - The caller must ensure the CPU supports this feature before calling.
+///
+/// # Feature Flag
+/// This function requires the `avx512` cargo feature and nightly Rust.
+#[cfg(all(target_arch = "x86_64", feature = "avx512"))]
+#[target_feature(enable = "avx512f")]
+#[inline]
+pub unsafe fn cosine_distance_avx512(a: &[f32], b: &[f32]) -> f32 {
+    assert_eq!(a.len(), b.len(), "Vector dimensions must match");
+
+    let len = a.len();
+    let mut i = 0;
+
+    let mut dot_sum = _mm512_setzero_ps();
+    let mut norm_a_sum = _mm512_setzero_ps();
+    let mut norm_b_sum = _mm512_setzero_ps();
+
+    while i + 16 <= len {
+        let va = _mm512_loadu_ps(a.as_ptr().add(i));
+        let vb = _mm512_loadu_ps(b.as_ptr().add(i));
+
+        dot_sum = _mm512_fmadd_ps(va, vb, dot_sum);
+        norm_a_sum = _mm512_fmadd_ps(va, va, norm_a_sum);
+        norm_b_sum = _mm512_fmadd_ps(vb, vb, norm_b_sum);
+
+        i += 16;
+    }
+
+    let mut dot = _mm512_reduce_add_ps(dot_sum);
+    let mut norm_a = _mm512_reduce_add_ps(norm_a_sum);
+    let mut norm_b = _mm512_reduce_add_ps(norm_b_sum);
+
+    while i < len {
+        dot += a[i] * b[i];
+        norm_a += a[i] * a[i];
+        norm_b += b[i] * b[i];
+        i += 1;
+    }
+
+    let norm_product = (norm_a * norm_b).sqrt();
+    if norm_product == 0.0 {
+        0.0
+    } else {
+        1.0 - (dot / norm_product)
+    }
+}
+
 // =============================================================================
 // AVX2+FMA Implementations (x86_64)
 // =============================================================================
@@ -469,8 +523,8 @@ pub unsafe fn cosine_distance_avx2(a: &[f32], b: &[f32]) -> f32 {
 
 /// Compute squared Euclidean distance using ARM NEON intrinsics.
 ///
-/// Processes 4 floats per iteration using 128-bit NEON registers.
-/// NEON is always available on aarch64, so no runtime detection needed.
+/// Processes 8 floats per iteration using 2 independent accumulators
+/// for better instruction-level parallelism on modern ARM cores.
 #[cfg(target_arch = "aarch64")]
 #[inline(always)]
 pub fn euclidean_distance_squared_neon(a: &[f32], b: &[f32]) -> f32 {
@@ -479,29 +533,39 @@ pub fn euclidean_distance_squared_neon(a: &[f32], b: &[f32]) -> f32 {
     let len = a.len();
     let mut i = 0;
 
-    // Accumulator for sum of squared differences (128-bit = 4 floats)
-    let mut sum = unsafe { vdupq_n_f32(0.0) };
+    let mut sum1 = unsafe { vdupq_n_f32(0.0) };
+    let mut sum2 = unsafe { vdupq_n_f32(0.0) };
 
-    // Main loop: process 4 floats at a time
-    while i + 4 <= len {
+    // Main loop: process 8 floats at a time with 2 accumulators
+    while i + 8 <= len {
         unsafe {
-            // Load 4 floats from each vector
+            let va1 = vld1q_f32(a.as_ptr().add(i));
+            let vb1 = vld1q_f32(b.as_ptr().add(i));
+            let diff1 = vsubq_f32(va1, vb1);
+            sum1 = vfmaq_f32(sum1, diff1, diff1);
+
+            let va2 = vld1q_f32(a.as_ptr().add(i + 4));
+            let vb2 = vld1q_f32(b.as_ptr().add(i + 4));
+            let diff2 = vsubq_f32(va2, vb2);
+            sum2 = vfmaq_f32(sum2, diff2, diff2);
+        }
+        i += 8;
+    }
+
+    // Handle 4-float tail
+    if i + 4 <= len {
+        unsafe {
             let va = vld1q_f32(a.as_ptr().add(i));
             let vb = vld1q_f32(b.as_ptr().add(i));
-
-            // Compute difference: diff = a - b
             let diff = vsubq_f32(va, vb);
-
-            // Accumulate: sum += diff * diff (fused multiply-add)
-            sum = vfmaq_f32(sum, diff, diff);
+            sum1 = vfmaq_f32(sum1, diff, diff);
         }
         i += 4;
     }
 
-    // Horizontal sum of the 4 floats
-    let mut total = unsafe { vaddvq_f32(sum) };
+    // Combine accumulators and horizontal sum
+    let mut total = unsafe { vaddvq_f32(vaddq_f32(sum1, sum2)) };
 
-    // Handle tail elements
     while i < len {
         let diff = a[i] - b[i];
         total += diff * diff;
@@ -520,8 +584,8 @@ pub fn euclidean_distance_neon(a: &[f32], b: &[f32]) -> f32 {
 
 /// Compute Manhattan (L1) distance using ARM NEON intrinsics.
 ///
-/// Uses native `vabsq_f32` for computing absolute value.
-/// Processes 4 floats per iteration using 128-bit NEON registers.
+/// Processes 8 floats per iteration using 2 independent accumulators
+/// for better instruction-level parallelism on modern ARM cores.
 #[cfg(target_arch = "aarch64")]
 #[inline(always)]
 pub fn manhattan_distance_neon(a: &[f32], b: &[f32]) -> f32 {
@@ -530,32 +594,30 @@ pub fn manhattan_distance_neon(a: &[f32], b: &[f32]) -> f32 {
     let len = a.len();
     let mut i = 0;
 
-    // Accumulator for sum of absolute differences (128-bit = 4 floats)
-    let mut sum = unsafe { vdupq_n_f32(0.0) };
+    let mut sum1 = unsafe { vdupq_n_f32(0.0) };
+    let mut sum2 = unsafe { vdupq_n_f32(0.0) };
 
-    // Main loop: process 4 floats at a time
-    while i + 4 <= len {
+    while i + 8 <= len {
         unsafe {
-            // Load 4 floats from each vector
-            let va = vld1q_f32(a.as_ptr().add(i));
-            let vb = vld1q_f32(b.as_ptr().add(i));
+            let diff1 = vsubq_f32(vld1q_f32(a.as_ptr().add(i)), vld1q_f32(b.as_ptr().add(i)));
+            sum1 = vaddq_f32(sum1, vabsq_f32(diff1));
 
-            // Compute difference: diff = a - b
-            let diff = vsubq_f32(va, vb);
+            let diff2 = vsubq_f32(vld1q_f32(a.as_ptr().add(i + 4)), vld1q_f32(b.as_ptr().add(i + 4)));
+            sum2 = vaddq_f32(sum2, vabsq_f32(diff2));
+        }
+        i += 8;
+    }
 
-            // Compute absolute value using native NEON abs instruction
-            let abs_diff = vabsq_f32(diff);
-
-            // Accumulate: sum += |diff|
-            sum = vaddq_f32(sum, abs_diff);
+    if i + 4 <= len {
+        unsafe {
+            let diff = vsubq_f32(vld1q_f32(a.as_ptr().add(i)), vld1q_f32(b.as_ptr().add(i)));
+            sum1 = vaddq_f32(sum1, vabsq_f32(diff));
         }
         i += 4;
     }
 
-    // Horizontal sum of the 4 floats
-    let mut total = unsafe { vaddvq_f32(sum) };
+    let mut total = unsafe { vaddvq_f32(vaddq_f32(sum1, sum2)) };
 
-    // Handle tail elements
     while i < len {
         total += (a[i] - b[i]).abs();
         i += 1;
@@ -566,7 +628,8 @@ pub fn manhattan_distance_neon(a: &[f32], b: &[f32]) -> f32 {
 
 /// Compute dot product using ARM NEON intrinsics.
 ///
-/// Processes 4 floats per iteration using 128-bit NEON registers.
+/// Processes 8 floats per iteration using 2 independent accumulators
+/// for better instruction-level parallelism on modern ARM cores.
 #[cfg(target_arch = "aarch64")]
 #[inline(always)]
 pub fn dot_product_neon(a: &[f32], b: &[f32]) -> f32 {
@@ -575,31 +638,101 @@ pub fn dot_product_neon(a: &[f32], b: &[f32]) -> f32 {
     let len = a.len();
     let mut i = 0;
 
-    // Accumulator for dot product
-    let mut sum = unsafe { vdupq_n_f32(0.0) };
+    let mut sum1 = unsafe { vdupq_n_f32(0.0) };
+    let mut sum2 = unsafe { vdupq_n_f32(0.0) };
 
-    // Main loop: process 4 floats at a time
-    while i + 4 <= len {
+    while i + 8 <= len {
         unsafe {
-            let va = vld1q_f32(a.as_ptr().add(i));
-            let vb = vld1q_f32(b.as_ptr().add(i));
+            sum1 = vfmaq_f32(sum1, vld1q_f32(a.as_ptr().add(i)), vld1q_f32(b.as_ptr().add(i)));
+            sum2 = vfmaq_f32(sum2, vld1q_f32(a.as_ptr().add(i + 4)), vld1q_f32(b.as_ptr().add(i + 4)));
+        }
+        i += 8;
+    }
 
-            // Accumulate: sum += a * b
-            sum = vfmaq_f32(sum, va, vb);
+    if i + 4 <= len {
+        unsafe {
+            sum1 = vfmaq_f32(sum1, vld1q_f32(a.as_ptr().add(i)), vld1q_f32(b.as_ptr().add(i)));
         }
         i += 4;
     }
 
-    // Horizontal sum
-    let mut total = unsafe { vaddvq_f32(sum) };
+    let mut total = unsafe { vaddvq_f32(vaddq_f32(sum1, sum2)) };
 
-    // Handle tail elements
     while i < len {
         total += a[i] * b[i];
         i += 1;
     }
 
     total
+}
+
+/// Compute cosine distance using ARM NEON intrinsics.
+///
+/// Computes dot product and norms in a single pass:
+/// `cosine_distance = 1 - (a · b) / (||a|| * ||b||)`
+///
+/// Processes 8 floats per iteration using 2 independent accumulators
+/// for better instruction-level parallelism on modern ARM cores.
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+pub fn cosine_distance_neon(a: &[f32], b: &[f32]) -> f32 {
+    assert_eq!(a.len(), b.len(), "Vector dimensions must match");
+
+    let len = a.len();
+    let mut i = 0;
+
+    let mut dot1 = unsafe { vdupq_n_f32(0.0) };
+    let mut dot2 = unsafe { vdupq_n_f32(0.0) };
+    let mut na1 = unsafe { vdupq_n_f32(0.0) };
+    let mut na2 = unsafe { vdupq_n_f32(0.0) };
+    let mut nb1 = unsafe { vdupq_n_f32(0.0) };
+    let mut nb2 = unsafe { vdupq_n_f32(0.0) };
+
+    while i + 8 <= len {
+        unsafe {
+            let va1 = vld1q_f32(a.as_ptr().add(i));
+            let vb1 = vld1q_f32(b.as_ptr().add(i));
+            dot1 = vfmaq_f32(dot1, va1, vb1);
+            na1 = vfmaq_f32(na1, va1, va1);
+            nb1 = vfmaq_f32(nb1, vb1, vb1);
+
+            let va2 = vld1q_f32(a.as_ptr().add(i + 4));
+            let vb2 = vld1q_f32(b.as_ptr().add(i + 4));
+            dot2 = vfmaq_f32(dot2, va2, vb2);
+            na2 = vfmaq_f32(na2, va2, va2);
+            nb2 = vfmaq_f32(nb2, vb2, vb2);
+        }
+        i += 8;
+    }
+
+    if i + 4 <= len {
+        unsafe {
+            let va = vld1q_f32(a.as_ptr().add(i));
+            let vb = vld1q_f32(b.as_ptr().add(i));
+            dot1 = vfmaq_f32(dot1, va, vb);
+            na1 = vfmaq_f32(na1, va, va);
+            nb1 = vfmaq_f32(nb1, vb, vb);
+        }
+        i += 4;
+    }
+
+    let mut dot = unsafe { vaddvq_f32(vaddq_f32(dot1, dot2)) };
+    let mut norm_a = unsafe { vaddvq_f32(vaddq_f32(na1, na2)) };
+    let mut norm_b = unsafe { vaddvq_f32(vaddq_f32(nb1, nb2)) };
+
+    while i < len {
+        dot += a[i] * b[i];
+        norm_a += a[i] * a[i];
+        norm_b += b[i] * b[i];
+        i += 1;
+    }
+
+    let norm_product = (norm_a * norm_b).sqrt();
+    if norm_product == 0.0 {
+        0.0
+    } else {
+        1.0 - (dot / norm_product)
+    }
 }
 
 // =============================================================================
@@ -749,6 +882,41 @@ pub fn manhattan_distance(a: &[f32], b: &[f32]) -> f32 {
 
     #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
     scalar::manhattan_distance(a, b)
+}
+
+/// Compute cosine distance with automatic CPU feature detection.
+///
+/// Cosine distance = 1 - cosine_similarity(a, b).
+/// Range [0, 2] where 0 means identical direction.
+///
+/// Dispatch order (fastest first):
+/// 1. AVX-512F (x86_64, requires `avx512` cargo feature) - 16 floats/iteration
+/// 2. AVX2+FMA (x86_64) - 8 floats/iteration
+/// 3. NEON (aarch64) - 4 floats/iteration
+/// 4. Scalar fallback
+#[inline]
+pub fn cosine_distance(a: &[f32], b: &[f32]) -> f32 {
+    #[cfg(target_arch = "x86_64")]
+    {
+        #[cfg(feature = "avx512")]
+        {
+            if is_x86_feature_detected!("avx512f") {
+                return unsafe { cosine_distance_avx512(a, b) };
+            }
+        }
+        if is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma") {
+            return unsafe { cosine_distance_avx2(a, b) };
+        }
+        scalar::cosine_distance(a, b)
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        cosine_distance_neon(a, b)
+    }
+
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+    scalar::cosine_distance(a, b)
 }
 
 #[cfg(test)]
@@ -1004,6 +1172,63 @@ mod tests {
             "Manhattan - Scalar: {}, AVX2: {}",
             scalar_result,
             avx2_result
+        );
+    }
+
+    #[test]
+    fn test_cosine_distance_matches_scalar() {
+        for dim in [3, 7, 8, 15, 16, 31, 32, 64, 100, 128, 256, 768] {
+            let a: Vec<f32> = (0..dim).map(|x| (x as f32) * 0.1 + 0.1).collect();
+            let b: Vec<f32> = (0..dim).map(|x| (x as f32) * -0.2 + 3.0).collect();
+
+            let scalar_result = scalar::cosine_distance(&a, &b);
+            let simd_result = cosine_distance(&a, &b);
+
+            let tol = scalar_result.abs() * 1e-5 + 1e-5;
+            assert!(
+                (scalar_result - simd_result).abs() < tol,
+                "Dimension {}: Scalar: {}, SIMD: {}",
+                dim,
+                scalar_result,
+                simd_result
+            );
+        }
+    }
+
+    #[test]
+    fn test_cosine_distance_identical() {
+        let a: Vec<f32> = (0..64).map(|x| (x as f32) + 1.0).collect();
+        let result = cosine_distance(&a, &a);
+        assert!(
+            result.abs() < 1e-5,
+            "Cosine distance to self should be 0, got {}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_cosine_distance_orthogonal() {
+        let mut a = vec![0.0; 8];
+        let mut b = vec![0.0; 8];
+        a[0] = 1.0;
+        b[1] = 1.0;
+        let result = cosine_distance(&a, &b);
+        assert!(
+            (result - 1.0).abs() < 1e-5,
+            "Cosine distance of orthogonal vectors should be 1.0, got {}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_cosine_distance_zero_vector() {
+        let a = vec![0.0; 8];
+        let b = vec![1.0; 8];
+        let result = cosine_distance(&a, &b);
+        assert!(
+            result.abs() < 1e-5,
+            "Cosine distance with zero vector should be 0.0, got {}",
+            result
         );
     }
 

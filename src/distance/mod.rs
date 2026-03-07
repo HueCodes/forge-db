@@ -7,7 +7,10 @@ pub mod scalar;
 pub mod simd;
 
 // Re-export the auto-dispatching functions as the primary API
-pub use simd::{dot_product, euclidean_distance, euclidean_distance_squared, manhattan_distance};
+pub use simd::{
+    cosine_distance, dot_product, euclidean_distance, euclidean_distance_squared,
+    manhattan_distance,
+};
 
 /// Supported distance metrics for similarity search.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -38,7 +41,7 @@ impl DistanceMetric {
         match self {
             DistanceMetric::Euclidean => euclidean_distance(a, b),
             DistanceMetric::EuclideanSquared => euclidean_distance_squared(a, b),
-            DistanceMetric::Cosine => scalar::cosine_distance(a, b),
+            DistanceMetric::Cosine => cosine_distance(a, b),
             DistanceMetric::DotProduct => -dot_product(a, b), // Negative for min-heap
             DistanceMetric::Manhattan => manhattan_distance(a, b),
         }
@@ -64,6 +67,33 @@ mod tests {
         // dot product is 1.0, so distance should be -1.0
         let dist = DistanceMetric::DotProduct.compute(&a, &b);
         assert!((dist - (-1.0)).abs() < 1e-5);
+    }
+
+    #[test]
+    fn test_distance_metric_cosine() {
+        let a = vec![1.0, 0.0];
+        let b = vec![0.0, 1.0];
+        let dist = DistanceMetric::Cosine.compute(&a, &b);
+        // Orthogonal vectors: cosine distance = 1.0
+        assert!((dist - 1.0).abs() < 1e-5);
+
+        // Identical direction: cosine distance = 0.0
+        let dist2 = DistanceMetric::Cosine.compute(&a, &a);
+        assert!(dist2.abs() < 1e-5);
+    }
+
+    #[test]
+    fn test_distance_metric_cosine_matches_scalar() {
+        let a: Vec<f32> = (0..128).map(|x| (x as f32) * 0.01 + 0.1).collect();
+        let b: Vec<f32> = (0..128).map(|x| (x as f32) * 0.02 - 0.5).collect();
+        let metric_result = DistanceMetric::Cosine.compute(&a, &b);
+        let scalar_result = scalar::cosine_distance(&a, &b);
+        assert!(
+            (metric_result - scalar_result).abs() < 1e-5,
+            "Metric: {}, Scalar: {}",
+            metric_result,
+            scalar_result
+        );
     }
 
     #[test]

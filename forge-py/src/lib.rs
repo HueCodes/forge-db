@@ -1,3 +1,4 @@
+#![allow(clippy::useless_conversion)] // PyO3 macros generate Into::<PyErr>::into on PyErr values
 //! Python bindings for forge-db using PyO3.
 //!
 //! # Usage
