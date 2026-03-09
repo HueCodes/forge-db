@@ -26,7 +26,7 @@ use std::time::Instant;
 
 use rayon::prelude::*;
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Json},
     routing::{delete, get, post},
@@ -59,6 +59,12 @@ use crate::state::AppState;
 // ─────────────────────────────────────────────────────────────────────────────
 // JSON request / response DTOs
 // ─────────────────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+pub struct PaginationParams {
+    pub offset: Option<usize>,
+    pub limit: Option<usize>,
+}
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct CreateCollectionBody {
@@ -150,6 +156,7 @@ pub struct SearchResponse {
     pub results: Vec<SearchResult>,
     pub latency_ms: f32,
     pub vectors_scanned: usize,
+    pub partitions_probed: u32,
 }
 
 #[derive(Debug, Serialize)]
@@ -242,10 +249,21 @@ async fn health_handler(
 }
 
 async fn list_collections_handler(
+    Query(params): Query<PaginationParams>,
     State(state): State<AppStateArc>,
 ) -> impl IntoResponse {
-    let names = state.list_collections();
-    Json(serde_json::json!({ "collections": names }))
+    let all_names = state.list_collections();
+    let total = all_names.len();
+    let offset = params.offset.unwrap_or(0).min(total);
+    let limit = params.limit.unwrap_or(100).min(1000);
+    let names: Vec<_> = all_names.into_iter().skip(offset).take(limit).collect();
+
+    Json(serde_json::json!({
+        "collections": names,
+        "total": total,
+        "offset": offset,
+        "limit": limit,
+    }))
 }
 
 async fn create_collection_handler(
@@ -355,6 +373,7 @@ async fn search_handler(
         results,
         latency_ms,
         vectors_scanned: 0,
+        partitions_probed: 0,
     })
     .into_response()
 }
@@ -560,6 +579,7 @@ async fn batch_search_handler(
                 results: items,
                 latency_ms: 0.0,
                 vectors_scanned: 0,
+                partitions_probed: 0,
             }
         }).collect::<Vec<_>>()
     })
@@ -680,7 +700,14 @@ async fn compact_handler(
     Json(serde_json::json!({ "success": true, "vectors_removed": removed })).into_response()
 }
 
-async fn stats_handler(State(state): State<AppStateArc>) -> impl IntoResponse {
+async fn stats_handler(
+    headers: HeaderMap,
+    axum::extract::Extension(config): axum::extract::Extension<ForgeConfig>,
+    State(state): State<AppStateArc>,
+) -> impl IntoResponse {
+    if check_auth(&headers, &config).is_err() {
+        return api_error(StatusCode::UNAUTHORIZED, "unauthorized").into_response();
+    }
     Json(StatsResponse {
         total_vectors: state.total_vectors(),
         total_collections: state.list_collections().len(),
@@ -692,6 +719,7 @@ async fn stats_handler(State(state): State<AppStateArc>) -> impl IntoResponse {
             .load(std::sync::atomic::Ordering::Relaxed),
         uptime_seconds: state.stats.uptime_seconds(),
     })
+    .into_response()
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
