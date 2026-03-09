@@ -848,7 +848,7 @@ pub fn dot_product(a: &[f32], b: &[f32]) -> f32 {
 
 /// Compute Manhattan (L1) distance with automatic CPU feature detection.
 ///
-/// Manhattan distance is the sum of absolute differences: sum(|a[i] - b[i]|).
+/// Manhattan distance is the sum of absolute differences: `sum(|a[i] - b[i]|)`.
 /// Also known as taxicab distance or city block distance.
 ///
 /// Dispatch order (fastest first):

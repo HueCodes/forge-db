@@ -724,7 +724,7 @@ impl ProductQuantizer4Bit {
 pub struct CompressedVectors4Bit {
     /// The trained 4-bit Product Quantizer
     pub pq: ProductQuantizer4Bit,
-    /// Packed 4-bit codes for each vector [n_vectors][ceil(n_subvectors/2)]
+    /// Packed 4-bit codes for each vector `[n_vectors][ceil(n_subvectors/2)]`
     pub codes: Vec<Vec<u8>>,
     /// Original vector IDs
     pub ids: Vec<u64>,

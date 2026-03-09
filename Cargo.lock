@@ -588,6 +588,7 @@ dependencies = [
  "criterion",
  "crossbeam-epoch",
  "hdf5",
+ "libc",
  "memmap2",
  "parking_lot 0.12.5",
  "proptest",

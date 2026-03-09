@@ -1,5 +1,6 @@
 [workspace]
 members = [".", "forge-server", "forge-py"]
+exclude = ["fuzz"]
 resolver = "2"
 
 [workspace.package]
@@ -38,6 +39,7 @@ smallvec = "1.11"
 crossbeam-epoch = "0.9"
 thiserror = { workspace = true }
 crc32fast = "1.3"
+libc = "0.2"
 roaring = "0.10"
 static_assertions = "1.1"
 tracing = { workspace = true }

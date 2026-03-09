@@ -313,7 +313,7 @@ impl<'a> Iterator for VectorStoreIter<'a> {
 impl ExactSizeIterator for VectorStoreIter<'_> {}
 
 impl From<Vec<Vector>> for VectorStore {
-    /// Convert a Vec<Vector> into contiguous VectorStore layout.
+    /// Convert a `Vec<Vector>` into contiguous VectorStore layout.
     ///
     /// This efficiently copies all vector data into a single contiguous buffer,
     /// eliminating the per-vector Arc allocations.

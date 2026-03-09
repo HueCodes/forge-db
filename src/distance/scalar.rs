@@ -3,7 +3,7 @@
 
 /// Compute the Euclidean (L2) distance between two vectors.
 ///
-/// Returns sqrt(sum((a[i] - b[i])^2))
+/// Returns `sqrt(sum((a[i] - b[i])^2))`
 #[inline]
 pub fn euclidean_distance(a: &[f32], b: &[f32]) -> f32 {
     assert_eq!(a.len(), b.len(), "Vector dimensions must match");
@@ -22,7 +22,7 @@ pub fn euclidean_distance(a: &[f32], b: &[f32]) -> f32 {
 
 /// Compute the squared Euclidean distance between two vectors.
 ///
-/// Returns sum((a[i] - b[i])^2)
+/// Returns `sum((a[i] - b[i])^2)`
 ///
 /// This is faster than `euclidean_distance` when you only need relative
 /// distances (e.g., finding nearest neighbors) since it skips the sqrt.
@@ -41,7 +41,7 @@ pub fn euclidean_distance_squared(a: &[f32], b: &[f32]) -> f32 {
 
 /// Compute the dot product of two vectors.
 ///
-/// Returns sum(a[i] * b[i])
+/// Returns `sum(a[i] * b[i])`
 #[inline]
 pub fn dot_product(a: &[f32], b: &[f32]) -> f32 {
     assert_eq!(a.len(), b.len(), "Vector dimensions must match");
@@ -88,7 +88,7 @@ pub fn cosine_distance(a: &[f32], b: &[f32]) -> f32 {
 
 /// Compute the Manhattan (L1) distance between two vectors.
 ///
-/// Returns sum(|a[i] - b[i]|)
+/// Returns `sum(|a[i] - b[i]|)`
 ///
 /// Also known as taxicab distance or city block distance.
 #[inline]

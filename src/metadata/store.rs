@@ -110,7 +110,7 @@ impl MetadataStore {
     /// Remove metadata for a vector.
     ///
     /// This invalidates all bitmap indices. After removing vectors, you should call
-    /// [`rebuild_dirty_indices`] before using filtered searches, or check [`needs_rebuild`]
+    /// [`rebuild_dirty_indices`](Self::rebuild_dirty_indices) before using filtered searches, or check [`needs_rebuild`](Self::needs_rebuild)
     /// to see if any indices need rebuilding.
     pub fn remove(&mut self, vector_id: u64) -> Option<HashMap<String, MetadataValue>> {
         // Mark all indexed fields as dirty since the bitmaps are now stale

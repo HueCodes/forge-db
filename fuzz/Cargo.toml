@@ -1,0 +1,31 @@
+[package]
+name = "forge-db-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+# Prevent Cargo from including this crate in the parent workspace
+[workspace]
+
+[dependencies]
+libfuzzer-sys = "0.4"
+forge-db = { path = ".." }
+tempfile = "3"
+
+[[bin]]
+name = "fuzz_wal_replay"
+path = "fuzz_targets/fuzz_wal_replay.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_brute_force_load"
+path = "fuzz_targets/fuzz_brute_force_load.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_file_header"
+path = "fuzz_targets/fuzz_file_header.rs"
+doc = false

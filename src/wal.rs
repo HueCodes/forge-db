@@ -123,7 +123,7 @@ impl WriteAheadLog {
     /// Open (or create) a WAL in the given directory.
     ///
     /// If existing WAL files are found, they are kept for replay.
-    /// Call [`replay`](Self::replay) to recover pending entries.
+    /// Call [`replay_all`](Self::replay_all) to recover pending entries.
     pub fn open(dir: impl AsRef<Path>) -> Result<Self> {
         let dir = dir.as_ref().to_path_buf();
         fs::create_dir_all(&dir)?;
@@ -158,6 +158,7 @@ impl WriteAheadLog {
 
         self.writer.write_all(&entry_bytes)?;
         self.writer.flush()?;
+        self.writer.get_ref().sync_data()?;
 
         Ok(seq)
     }

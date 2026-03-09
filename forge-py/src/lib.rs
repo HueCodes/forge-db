@@ -161,14 +161,20 @@ impl PyIvfPqIndex {
         self.inner.compact();
     }
 
-    /// Save the index to a file.
+    /// Save the index to a .fdb file.
+    ///
+    /// Args:
+    ///     path: file path to write (e.g. "my_index.fdb")
     pub fn save(&self, path: &str) -> PyResult<()> {
         self.inner
             .save(path)
             .map_err(|e| PyRuntimeError::new_err(format!("save failed: {e}")))
     }
 
-    /// Load an index from a file.
+    /// Load an index from a .fdb file.
+    ///
+    /// Args:
+    ///     path: file path to read
     #[staticmethod]
     pub fn load(path: &str) -> PyResult<Self> {
         let inner = IVFPQIndex::load(path)
@@ -195,6 +201,7 @@ impl PyIvfPqIndex {
         Ok(dict.into())
     }
 
+    /// Return a string representation of the index.
     pub fn __repr__(&self) -> String {
         format!(
             "IvfPqIndex(vectors={}, dim={}, partitions={})",
@@ -252,6 +259,13 @@ impl PyHnswIndex {
     }
 
     /// Search for the k nearest neighbors.
+    ///
+    /// Args:
+    ///     query: float32 array or list of shape (dim,)
+    ///     k: number of results
+    ///
+    /// Returns:
+    ///     list of (id, distance) tuples, sorted by distance
     pub fn search(&self, query: Vec<f32>, k: usize) -> Vec<(u64, f32)> {
         self.inner.search(&query, k)
     }
@@ -261,6 +275,7 @@ impl PyHnswIndex {
         self.inner.len()
     }
 
+    /// Return a string representation of the index.
     pub fn __repr__(&self) -> String {
         format!(
             "HnswIndex(vectors={}, dim={})",
@@ -282,6 +297,10 @@ pub struct PyBruteForceIndex {
 
 #[pymethods]
 impl PyBruteForceIndex {
+    /// Create a new brute-force index.
+    ///
+    /// Args:
+    ///     metric: distance metric ("euclidean", "cosine", "dot_product", "manhattan")
     #[new]
     #[pyo3(signature = (metric="euclidean"))]
     pub fn new(metric: &str) -> PyResult<Self> {
@@ -291,6 +310,11 @@ impl PyBruteForceIndex {
         })
     }
 
+    /// Add vectors to the index.
+    ///
+    /// Args:
+    ///     vectors: numpy float32 array of shape (n, dim)
+    ///     ids: list of integer IDs (length n)
     pub fn add(&mut self, vectors: PyReadonlyArray2<f32>, ids: Vec<u64>) -> PyResult<()> {
         let vecs = to_vectors(ids, vectors)?;
         for v in vecs {
@@ -299,14 +323,24 @@ impl PyBruteForceIndex {
         Ok(())
     }
 
+    /// Search for the k nearest neighbors.
+    ///
+    /// Args:
+    ///     query: float32 array or list of shape (dim,)
+    ///     k: number of results
+    ///
+    /// Returns:
+    ///     list of (id, distance) tuples, sorted by distance
     pub fn search(&self, query: Vec<f32>, k: usize) -> Vec<(u64, f32)> {
         self.inner.search(&query, k)
     }
 
+    /// Number of vectors in the index.
     pub fn __len__(&self) -> usize {
         self.inner.len()
     }
 
+    /// Return a string representation of the index.
     pub fn __repr__(&self) -> String {
         format!("BruteForceIndex(vectors={})", self.inner.len())
     }

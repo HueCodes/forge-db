@@ -15,9 +15,9 @@ pub use simd::{
 /// Supported distance metrics for similarity search.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DistanceMetric {
-    /// Euclidean (L2) distance: sqrt(sum((a[i] - b[i])^2))
+    /// Euclidean (L2) distance: `sqrt(sum((a[i] - b[i])^2))`
     Euclidean,
-    /// Squared Euclidean distance: sum((a[i] - b[i])^2)
+    /// Squared Euclidean distance: `sum((a[i] - b[i])^2)`.
     /// Faster than Euclidean when only relative ordering matters.
     EuclideanSquared,
     /// Cosine distance: 1 - cosine_similarity(a, b)
@@ -26,7 +26,7 @@ pub enum DistanceMetric {
     /// Negative dot product: -dot(a, b)
     /// Negated for min-heap compatibility (larger dot = smaller distance).
     DotProduct,
-    /// Manhattan (L1) distance: sum(|a[i] - b[i]|)
+    /// Manhattan (L1) distance: `sum(|a[i] - b[i]|)`.
     /// Also known as taxicab distance or city block distance.
     Manhattan,
 }

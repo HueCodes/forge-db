@@ -133,6 +133,15 @@ pub enum ForgeDbError {
         /// The field with the stale index.
         field: String,
     },
+
+    /// Insufficient disk space for write operation.
+    #[error("insufficient disk space: need {required} bytes but only {available} bytes available")]
+    InsufficientDiskSpace {
+        /// Bytes required for the write.
+        required: u64,
+        /// Bytes available on the filesystem.
+        available: u64,
+    },
 }
 
 impl ForgeDbError {
@@ -195,6 +204,14 @@ impl ForgeDbError {
     pub fn stale_index(field: impl Into<String>) -> Self {
         Self::StaleIndex {
             field: field.into(),
+        }
+    }
+
+    /// Creates a new `InsufficientDiskSpace` error.
+    pub fn insufficient_disk_space(required: u64, available: u64) -> Self {
+        Self::InsufficientDiskSpace {
+            required,
+            available,
         }
     }
 }
