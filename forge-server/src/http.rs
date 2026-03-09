@@ -223,10 +223,21 @@ fn check_auth(headers: &HeaderMap, config: &ForgeConfig) -> Result<(), StatusCod
 
 type AppStateArc = Arc<crate::state::AppState>;
 
-async fn health_handler() -> impl IntoResponse {
+async fn health_handler(
+    State(state): State<AppStateArc>,
+) -> impl IntoResponse {
+    let collections = state.list_collections();
+    let total_vectors: usize = state
+        .collections
+        .iter()
+        .map(|e| e.value().read().len())
+        .sum();
+
     Json(serde_json::json!({
         "status": "healthy",
         "version": env!("CARGO_PKG_VERSION"),
+        "collections": collections.len(),
+        "total_vectors": total_vectors,
     }))
 }
 

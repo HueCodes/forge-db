@@ -89,14 +89,25 @@ async fn main() -> anyhow::Result<()> {
 
     info!(addr = %metrics_addr, "Prometheus metrics endpoint");
 
-    // Health monitoring task
+    // Create a watch channel to broadcast shutdown to all tasks.
+    let (shutdown_tx, _) = tokio::sync::watch::channel(false);
+
+    // Health monitoring task (stops on shutdown signal)
     let health_state = state.clone();
     let health_config = config.clone();
+    let mut health_shutdown_rx = shutdown_tx.subscribe();
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
         loop {
-            interval.tick().await;
-            check_index_health(&health_state, &health_config);
+            tokio::select! {
+                _ = interval.tick() => {
+                    check_index_health(&health_state, &health_config);
+                }
+                _ = health_shutdown_rx.changed() => {
+                    info!("health monitor stopping");
+                    break;
+                }
+            }
         }
     });
 
@@ -112,9 +123,6 @@ async fn main() -> anyhow::Result<()> {
         .http_addr
         .parse()
         .context("parsing HTTP bind address")?;
-
-    // Create a watch channel to broadcast shutdown to both servers.
-    let (shutdown_tx, _) = tokio::sync::watch::channel(false);
 
     let grpc_task = {
         let state = state.clone();
@@ -215,15 +223,23 @@ async fn shutdown_signal() {
     use tokio::signal;
 
     let ctrl_c = async {
-        signal::ctrl_c().await.expect("failed to install Ctrl+C handler");
+        if let Err(e) = signal::ctrl_c().await {
+            tracing::error!(error = %e, "failed to listen for Ctrl+C");
+        }
     };
 
     #[cfg(unix)]
     let terminate = async {
-        signal::unix::signal(signal::unix::SignalKind::terminate())
-            .expect("failed to install SIGTERM handler")
-            .recv()
-            .await;
+        match signal::unix::signal(signal::unix::SignalKind::terminate()) {
+            Ok(mut sig) => {
+                sig.recv().await;
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "failed to install SIGTERM handler");
+                // Fall through — ctrl_c will still work
+                std::future::pending::<()>().await;
+            }
+        }
     };
 
     #[cfg(not(unix))]
