@@ -331,7 +331,7 @@ impl Collection {
     pub fn effective_dimension(&self) -> usize {
         if self.meta.dimension > 0 {
             self.meta.dimension
-        } else if self.index.len() > 0 {
+        } else if !self.index.is_empty() {
             self.index.dimension()
         } else {
             0

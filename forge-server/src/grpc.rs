@@ -89,11 +89,11 @@ impl ForgeService for ForgeServiceImpl {
 
         // Validate collection name
         validate_collection_name(&req.collection)
-            .map_err(|e| Status::invalid_argument(e))?;
+            .map_err(Status::invalid_argument)?;
 
         // Validate batch size
         validate_batch_size(req.vectors.len())
-            .map_err(|e| Status::invalid_argument(e))?;
+            .map_err(Status::invalid_argument)?;
 
         let coll = self
             .state
@@ -106,7 +106,7 @@ impl ForgeService for ForgeServiceImpl {
             let expected_dim = guard.effective_dimension();
             let vecs: Vec<Vec<f32>> = req.vectors.iter().map(|r| r.vector.clone()).collect();
             validate_vector_dimensions(&vecs, expected_dim)
-                .map_err(|e| Status::invalid_argument(e))?;
+                .map_err(Status::invalid_argument)?;
         }
 
         let count = req.vectors.len() as u64;
@@ -211,7 +211,7 @@ impl ForgeService for ForgeServiceImpl {
 
         // Validate top_k
         validate_top_k(req.top_k as usize)
-            .map_err(|e| Status::invalid_argument(e))?;
+            .map_err(Status::invalid_argument)?;
 
         let coll = self
             .state
@@ -223,7 +223,7 @@ impl ForgeService for ForgeServiceImpl {
             let guard = coll.read();
             let expected_dim = guard.effective_dimension();
             validate_query_dimension(&req.query, expected_dim)
-                .map_err(|e| Status::invalid_argument(e))?;
+                .map_err(Status::invalid_argument)?;
         }
 
         let query = req.query.clone();
@@ -363,7 +363,7 @@ impl ForgeService for ForgeServiceImpl {
 
         // Validate collection name
         validate_collection_name(&req.name)
-            .map_err(|e| Status::invalid_argument(e))?;
+            .map_err(Status::invalid_argument)?;
 
         let cfg = req.config.unwrap_or_default();
         let metric = Self::parse_distance_metric(&cfg.distance_metric);

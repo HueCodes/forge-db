@@ -59,7 +59,7 @@ fn main() {
     // =====================
     println!("=== IVF-PQ (partitioned compressed search) ===");
 
-    let mut index = IVFPQIndex::build(dataset.vectors.clone(), 256, 8, DistanceMetric::Euclidean);
+    let index = IVFPQIndex::build(dataset.vectors.clone(), 256, 8, DistanceMetric::Euclidean);
 
     println!("\n{:>8} | {:>12} | {:>10}", "nprobe", "Recall@10", "QPS");
     println!("{}", "-".repeat(38));

@@ -2012,7 +2012,7 @@ mod tests {
         // Need 300+ vectors for PQ k-means (256 centroids per codebook)
         let vectors: Vec<Vector> = (0..500).map(|i| Vector::random(i, 32)).collect();
 
-        let mut index = IVFPQIndex::build(vectors.clone(), 8, 4, DistanceMetric::Euclidean);
+        let index = IVFPQIndex::build(vectors.clone(), 8, 4, DistanceMetric::Euclidean);
         index.set_nprobe(4);
 
         let query = vectors[0].data.to_vec();
@@ -2031,7 +2031,7 @@ mod tests {
         // Need 300+ vectors for PQ k-means (256 centroids per codebook)
         let vectors: Vec<Vector> = (0..500).map(|i| Vector::random(i, 32)).collect();
 
-        let mut index = IVFPQIndex::build(vectors, 10, 4, DistanceMetric::Euclidean);
+        let index = IVFPQIndex::build(vectors, 10, 4, DistanceMetric::Euclidean);
 
         index.set_nprobe(5);
         assert_eq!(index.nprobe(), 5);
@@ -2046,7 +2046,7 @@ mod tests {
         // Need 300+ vectors for PQ k-means (256 centroids per codebook)
         let vectors: Vec<Vector> = (0..500).map(|i| Vector::random(i, 32)).collect();
 
-        let mut index = IVFPQIndex::build(vectors.clone(), 8, 4, DistanceMetric::Euclidean);
+        let index = IVFPQIndex::build(vectors.clone(), 8, 4, DistanceMetric::Euclidean);
         index.set_nprobe(4);
 
         // Create query vectors as Vec<f32>
@@ -2071,7 +2071,7 @@ mod tests {
         // Need 300+ vectors for PQ k-means (256 centroids per codebook)
         let vectors: Vec<Vector> = (0..500).map(|i| Vector::random(i, 32)).collect();
 
-        let mut index = IVFPQIndex::build(vectors.clone(), 8, 4, DistanceMetric::Euclidean);
+        let index = IVFPQIndex::build(vectors.clone(), 8, 4, DistanceMetric::Euclidean);
         index.set_nprobe(4);
 
         let queries: Vec<Vec<f32>> = (0..10)
@@ -2092,7 +2092,7 @@ mod tests {
         // Need 300+ vectors for PQ k-means (256 centroids per codebook)
         let vectors: Vec<Vector> = (0..500).map(|i| Vector::random(i, 32)).collect();
 
-        let mut index = IVFPQIndex::build(vectors.clone(), 8, 4, DistanceMetric::Euclidean);
+        let index = IVFPQIndex::build(vectors.clone(), 8, 4, DistanceMetric::Euclidean);
         index.set_nprobe(8); // Search all partitions for determinism
 
         let queries: Vec<Vec<f32>> = (0..3).map(|i| vectors[i * 10].data.to_vec()).collect();
@@ -2140,7 +2140,7 @@ mod tests {
 
         // Build an index
         let vectors: Vec<Vector> = (0..500).map(|i| Vector::random(i, 32)).collect();
-        let mut index = IVFPQIndex::build(vectors.clone(), 8, 4, DistanceMetric::Euclidean);
+        let index = IVFPQIndex::build(vectors.clone(), 8, 4, DistanceMetric::Euclidean);
         index.set_nprobe(4);
 
         // Create a temp file
@@ -2232,7 +2232,7 @@ mod tests {
 
         // Build an index
         let vectors: Vec<Vector> = (0..500).map(|i| Vector::random(i, 32)).collect();
-        let mut index = IVFPQIndex::build(vectors.clone(), 8, 4, DistanceMetric::Euclidean);
+        let index = IVFPQIndex::build(vectors.clone(), 8, 4, DistanceMetric::Euclidean);
         index.set_nprobe(8);
 
         // Create metadata store
@@ -2279,7 +2279,7 @@ mod tests {
         use crate::metadata::{FilterCondition, MetadataStore, MetadataValue};
 
         let vectors: Vec<Vector> = (0..500).map(|i| Vector::random(i, 32)).collect();
-        let mut index = IVFPQIndex::build(vectors.clone(), 8, 4, DistanceMetric::Euclidean);
+        let index = IVFPQIndex::build(vectors.clone(), 8, 4, DistanceMetric::Euclidean);
         index.set_nprobe(8);
 
         // Create metadata store with no matching values

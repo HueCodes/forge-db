@@ -15,7 +15,7 @@ fn benchmark_hnsw_build(c: &mut Criterion) {
 
         let mut group = c.benchmark_group(format!("hnsw_build_{}", size));
 
-        for m in vec![16, 32] {
+        for m in [16, 32] {
             group.bench_with_input(BenchmarkId::from_parameter(m), &m, |b, &m| {
                 b.iter(|| {
                     let mut index = HNSWIndex::new(m, 200, DistanceMetric::Euclidean);
@@ -35,7 +35,7 @@ fn benchmark_hnsw_build(c: &mut Criterion) {
 fn benchmark_hnsw_search(c: &mut Criterion) {
     let dataset = Dataset::generate(10000, 1000, 128);
 
-    for m in vec![16, 32] {
+    for m in [16, 32] {
         let mut index = HNSWIndex::new(m, 200, DistanceMetric::Euclidean);
 
         println!("Building HNSW index with M={}", m);
@@ -46,7 +46,7 @@ fn benchmark_hnsw_search(c: &mut Criterion) {
 
         let mut group = c.benchmark_group(format!("hnsw_search_m{}", m));
 
-        for ef in vec![50, 100, 200, 400] {
+        for ef in [50, 100, 200, 400] {
             index.set_ef_search(ef);
 
             group.bench_with_input(BenchmarkId::from_parameter(ef), &ef, |b, _| {

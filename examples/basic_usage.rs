@@ -40,7 +40,7 @@ fn main() {
     // Quick throughput estimate
     let num_vectors = 10_000;
     let vectors: Vec<Vector> = (0..num_vectors).map(|i| Vector::random(i, dim)).collect();
-    let query = Vector::random(num_vectors as u64, dim);
+    let query = Vector::random(num_vectors, dim);
 
     let start = std::time::Instant::now();
     let _sum: f32 = vectors

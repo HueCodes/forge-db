@@ -195,7 +195,7 @@ mod tests {
     fn test_type_name() {
         assert_eq!(MetadataValue::String("test".into()).type_name(), "string");
         assert_eq!(MetadataValue::Integer(42).type_name(), "integer");
-        assert_eq!(MetadataValue::Float(3.14).type_name(), "float");
+        assert_eq!(MetadataValue::Float(3.15).type_name(), "float");
         assert_eq!(MetadataValue::Boolean(true).type_name(), "boolean");
         assert_eq!(MetadataValue::Null.type_name(), "null");
     }
@@ -208,8 +208,8 @@ mod tests {
         let i: MetadataValue = 42i64.into();
         assert_eq!(i.as_integer(), Some(42));
 
-        let f: MetadataValue = 3.14f64.into();
-        assert_eq!(f.as_float(), Some(3.14));
+        let f: MetadataValue = 2.71f64.into();
+        assert_eq!(f.as_float(), Some(2.71));
 
         let b: MetadataValue = true.into();
         assert_eq!(b.as_bool(), Some(true));

@@ -49,7 +49,7 @@ fn stress_brute_force_concurrent_insert_search() {
                 let guard = idx.read().unwrap();
                 let results = guard.search(&query.data, 10);
                 // Results may be fewer than 10 if index is still being populated
-                assert!(!results.is_empty() || guard.len() == 0);
+                assert!(!results.is_empty() || guard.is_empty());
             }
         }));
     }

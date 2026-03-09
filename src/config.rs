@@ -463,16 +463,13 @@ enable_reranking = true
 
     #[test]
     fn test_config_validation_errors() {
-        let mut config = ForgeConfig::default();
-        config.max_memory_bytes = 0;
+        let config = ForgeConfig { max_memory_bytes: 0, ..ForgeConfig::default() };
         assert!(config.validate().is_err());
     }
 
     #[test]
     fn test_ivf_config_validation() {
-        let mut ivf = IvfConfig::default();
-        ivf.nprobe = 2000;
-        ivf.n_clusters = 1024;
+        let mut ivf = IvfConfig { nprobe: 2000, n_clusters: 1024, ..IvfConfig::default() };
         assert!(ivf.validate().is_err(), "nprobe > n_clusters should error");
 
         ivf.nprobe = 16;

@@ -54,7 +54,7 @@ fn main() {
 
     println!("Building IVF-PQ index with {} vectors (auto-tune=true) ...", train_vecs.len());
 
-    let mut ivf_pq = IVFPQIndexBuilder::new()
+    let ivf_pq = IVFPQIndexBuilder::new()
         .vectors(train_vecs)
         .auto_tune(true)
         .build()

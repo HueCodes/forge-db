@@ -38,8 +38,7 @@ fn sample_vectors(n: usize, dim: usize) -> Vec<Vector> {
 #[tokio::test]
 async fn test_create_and_list_collections() {
     let dir = tempfile::tempdir().unwrap();
-    let mut config = ForgeConfig::default();
-    config.data_dir = dir.path().to_path_buf();
+    let config = ForgeConfig { data_dir: dir.path().to_path_buf(), ..ForgeConfig::default() };
     let state = Arc::new(AppState::new(config).await.unwrap());
 
     assert!(state.list_collections().is_empty());
@@ -56,8 +55,7 @@ async fn test_create_and_list_collections() {
 #[tokio::test]
 async fn test_duplicate_collection_rejected() {
     let dir = tempfile::tempdir().unwrap();
-    let mut config = ForgeConfig::default();
-    config.data_dir = dir.path().to_path_buf();
+    let config = ForgeConfig { data_dir: dir.path().to_path_buf(), ..ForgeConfig::default() };
     let state = Arc::new(AppState::new(config).await.unwrap());
 
     let meta = test_meta("dupe");
@@ -72,8 +70,7 @@ async fn test_duplicate_collection_rejected() {
 #[tokio::test]
 async fn test_drop_collection() {
     let dir = tempfile::tempdir().unwrap();
-    let mut config = ForgeConfig::default();
-    config.data_dir = dir.path().to_path_buf();
+    let config = ForgeConfig { data_dir: dir.path().to_path_buf(), ..ForgeConfig::default() };
     let state = Arc::new(AppState::new(config).await.unwrap());
 
     let meta = test_meta("to_drop");
@@ -88,8 +85,7 @@ async fn test_drop_collection() {
 #[tokio::test]
 async fn test_upsert_and_search() {
     let dir = tempfile::tempdir().unwrap();
-    let mut config = ForgeConfig::default();
-    config.data_dir = dir.path().to_path_buf();
+    let config = ForgeConfig { data_dir: dir.path().to_path_buf(), ..ForgeConfig::default() };
     let state = Arc::new(AppState::new(config).await.unwrap());
 
     let meta = test_meta("vectors");
@@ -119,8 +115,7 @@ async fn test_upsert_and_search() {
 #[tokio::test]
 async fn test_stats_tracking() {
     let dir = tempfile::tempdir().unwrap();
-    let mut config = ForgeConfig::default();
-    config.data_dir = dir.path().to_path_buf();
+    let config = ForgeConfig { data_dir: dir.path().to_path_buf(), ..ForgeConfig::default() };
     let state = Arc::new(AppState::new(config).await.unwrap());
 
     let meta = test_meta("stats_test");
@@ -141,8 +136,7 @@ async fn test_stats_tracking() {
 #[tokio::test]
 async fn test_brute_force_persistence_roundtrip() {
     let dir = tempfile::tempdir().unwrap();
-    let mut config = ForgeConfig::default();
-    config.data_dir = dir.path().to_path_buf();
+    let config = ForgeConfig { data_dir: dir.path().to_path_buf(), ..ForgeConfig::default() };
     let state = Arc::new(AppState::new(config).await.unwrap());
 
     // Create and populate a collection
@@ -159,7 +153,7 @@ async fn test_brute_force_persistence_roundtrip() {
     // Save to disk
     {
         let c = state.get_collection("persist_test").unwrap();
-        c.read().save_to_disk(&dir.path().to_path_buf()).unwrap();
+        c.read().save_to_disk(dir.path()).unwrap();
     }
 
     // Reload from disk
@@ -174,8 +168,7 @@ async fn test_brute_force_persistence_roundtrip() {
 #[tokio::test]
 async fn test_metadata_storage_and_retrieval() {
     let dir = tempfile::tempdir().unwrap();
-    let mut config = ForgeConfig::default();
-    config.data_dir = dir.path().to_path_buf();
+    let config = ForgeConfig { data_dir: dir.path().to_path_buf(), ..ForgeConfig::default() };
     let state = Arc::new(AppState::new(config).await.unwrap());
 
     let meta = test_meta("meta_coll");
@@ -212,8 +205,7 @@ async fn test_metadata_storage_and_retrieval() {
 #[tokio::test]
 async fn test_hnsw_upsert_and_search() {
     let dir = tempfile::tempdir().unwrap();
-    let mut config = ForgeConfig::default();
-    config.data_dir = dir.path().to_path_buf();
+    let config = ForgeConfig { data_dir: dir.path().to_path_buf(), ..ForgeConfig::default() };
     let state = Arc::new(AppState::new(config).await.unwrap());
 
     let mut meta = test_meta("hnsw_coll");
@@ -249,8 +241,7 @@ async fn test_hnsw_upsert_and_search() {
 #[tokio::test]
 async fn test_ivfpq_build() {
     let dir = tempfile::tempdir().unwrap();
-    let mut config = ForgeConfig::default();
-    config.data_dir = dir.path().to_path_buf();
+    let config = ForgeConfig { data_dir: dir.path().to_path_buf(), ..ForgeConfig::default() };
     let state = Arc::new(AppState::new(config).await.unwrap());
 
     let meta = test_meta("ivfpq_coll");
