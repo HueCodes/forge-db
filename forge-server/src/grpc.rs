@@ -19,7 +19,11 @@ use forge_db::{
 };
 
 use crate::auth::{extract_api_key, verify_api_key};
-use crate::collections::{Collection, CollectionIndex, CollectionMeta};
+use crate::collections::{
+    Collection, CollectionIndex, CollectionMeta,
+    validate_batch_size, validate_collection_name, validate_query_dimension,
+    validate_top_k, validate_vector_dimensions,
+};
 use crate::state::AppState;
 
 // Include generated protobuf code
@@ -83,10 +87,27 @@ impl ForgeService for ForgeServiceImpl {
         let req = request.into_inner();
         tracing::Span::current().record("collection", &req.collection);
 
+        // Validate collection name
+        validate_collection_name(&req.collection)
+            .map_err(|e| Status::invalid_argument(e))?;
+
+        // Validate batch size
+        validate_batch_size(req.vectors.len())
+            .map_err(|e| Status::invalid_argument(e))?;
+
         let coll = self
             .state
             .get_collection(&req.collection)
             .ok_or_else(|| Status::not_found(format!("collection '{}' not found", req.collection)))?;
+
+        // Validate vector dimensions
+        {
+            let guard = coll.read();
+            let expected_dim = guard.effective_dimension();
+            let vecs: Vec<Vec<f32>> = req.vectors.iter().map(|r| r.vector.clone()).collect();
+            validate_vector_dimensions(&vecs, expected_dim)
+                .map_err(|e| Status::invalid_argument(e))?;
+        }
 
         let count = req.vectors.len() as u64;
 
@@ -94,7 +115,7 @@ impl ForgeService for ForgeServiceImpl {
         {
             let mut wal = self.state.wal.lock();
             for record in &req.vectors {
-                let _ = wal.append(&WalOperation::Insert {
+                if let Err(e) = wal.append(&WalOperation::Insert {
                     id: record.id,
                     vector: record.vector.clone(),
                     metadata: if record.metadata_json.is_empty() {
@@ -102,7 +123,10 @@ impl ForgeService for ForgeServiceImpl {
                     } else {
                         Some(record.metadata_json.clone())
                     },
-                });
+                }) {
+                    tracing::error!(error = %e, "WAL append failed for upsert");
+                    return Err(Status::internal(format!("WAL write failed: {e}")));
+                }
             }
         }
 
@@ -148,6 +172,17 @@ impl ForgeService for ForgeServiceImpl {
             .get_collection(&req.collection)
             .ok_or_else(|| Status::not_found(format!("collection '{}' not found", req.collection)))?;
 
+        // WAL: record deletes before applying to index
+        {
+            let mut wal = self.state.wal.lock();
+            for &id in &req.ids {
+                if let Err(e) = wal.append(&WalOperation::Delete { id }) {
+                    tracing::error!(error = %e, "WAL append failed for delete");
+                    return Err(Status::internal(format!("WAL write failed: {e}")));
+                }
+            }
+        }
+
         let mut deleted = 0u64;
         {
             let mut guard = coll.write();
@@ -155,13 +190,6 @@ impl ForgeService for ForgeServiceImpl {
                 if guard.delete(id) {
                     deleted += 1;
                 }
-            }
-        }
-
-        {
-            let mut wal = self.state.wal.lock();
-            for &id in &req.ids {
-                let _ = wal.append(&WalOperation::Delete { id });
             }
         }
 
@@ -181,10 +209,22 @@ impl ForgeService for ForgeServiceImpl {
         let req = request.into_inner();
         tracing::Span::current().record("collection", &req.collection);
 
+        // Validate top_k
+        validate_top_k(req.top_k as usize)
+            .map_err(|e| Status::invalid_argument(e))?;
+
         let coll = self
             .state
             .get_collection(&req.collection)
             .ok_or_else(|| Status::not_found(format!("collection '{}' not found", req.collection)))?;
+
+        // Validate query dimension
+        {
+            let guard = coll.read();
+            let expected_dim = guard.effective_dimension();
+            validate_query_dimension(&req.query, expected_dim)
+                .map_err(|e| Status::invalid_argument(e))?;
+        }
 
         let query = req.query.clone();
         let k = req.top_k as usize;
@@ -228,10 +268,26 @@ impl ForgeService for ForgeServiceImpl {
         self.authenticate(&request)?;
         let req = request.into_inner();
 
+        // Validate top_k for each query
+        for (i, q) in req.queries.iter().enumerate() {
+            validate_top_k(q.top_k as usize)
+                .map_err(|e| Status::invalid_argument(format!("query[{}]: {}", i, e)))?;
+        }
+
         let coll = self
             .state
             .get_collection(&req.collection)
             .ok_or_else(|| Status::not_found(format!("collection '{}' not found", req.collection)))?;
+
+        // Validate query dimensions
+        {
+            let guard = coll.read();
+            let expected_dim = guard.effective_dimension();
+            for (i, q) in req.queries.iter().enumerate() {
+                validate_query_dimension(&q.query, expected_dim)
+                    .map_err(|e| Status::invalid_argument(format!("query[{}]: {}", i, e)))?;
+            }
+        }
 
         let start = Instant::now();
         let queries = req.queries.clone();
@@ -304,6 +360,11 @@ impl ForgeService for ForgeServiceImpl {
     ) -> Result<Response<CreateCollectionResponse>, Status> {
         self.authenticate(&request)?;
         let req = request.into_inner();
+
+        // Validate collection name
+        validate_collection_name(&req.name)
+            .map_err(|e| Status::invalid_argument(e))?;
+
         let cfg = req.config.unwrap_or_default();
         let metric = Self::parse_distance_metric(&cfg.distance_metric);
 
@@ -406,7 +467,9 @@ impl ForgeService for ForgeServiceImpl {
         let seq = {
             let mut wal = self.state.wal.lock();
             let seq = wal.next_sequence();
-            let _ = wal.checkpoint(seq.saturating_sub(1));
+            if let Err(e) = wal.checkpoint(seq.saturating_sub(1)) {
+                tracing::error!(error = %e, "WAL checkpoint failed");
+            }
             seq
         };
 
@@ -442,7 +505,9 @@ impl ForgeService for ForgeServiceImpl {
 
         {
             let mut wal = self.state.wal.lock();
-            let _ = wal.append(&WalOperation::Compact);
+            if let Err(e) = wal.append(&WalOperation::Compact) {
+                tracing::error!(error = %e, "WAL append failed for compact");
+            }
         }
 
         Ok(Response::new(CompactResponse {

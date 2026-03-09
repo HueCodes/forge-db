@@ -49,7 +49,11 @@ use forge_db::{
 };
 
 use crate::auth::{extract_api_key, verify_api_key};
-use crate::collections::{Collection, CollectionIndex, CollectionMeta};
+use crate::collections::{
+    Collection, CollectionIndex, CollectionMeta,
+    validate_batch_size, validate_collection_name, validate_query_dimension,
+    validate_top_k, validate_vector_dimensions,
+};
 use crate::state::AppState;
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -244,6 +248,12 @@ async fn create_collection_handler(
     }
 
     let name = body.name.clone().unwrap_or_else(|| "default".to_string());
+
+    // Validate collection name
+    if let Err(e) = validate_collection_name(&name) {
+        return api_error(StatusCode::BAD_REQUEST, e).into_response();
+    }
+
     let metric = parse_metric(&body.distance_metric);
 
     let meta = CollectionMeta {
@@ -284,10 +294,24 @@ async fn search_handler(
         return api_error(StatusCode::UNAUTHORIZED, "unauthorized").into_response();
     }
 
+    // Validate top_k
+    if let Err(e) = validate_top_k(body.top_k) {
+        return api_error(StatusCode::BAD_REQUEST, e).into_response();
+    }
+
     let coll = match state.get_collection(&name) {
         Some(c) => c,
         None => return api_error(StatusCode::NOT_FOUND, format!("collection '{name}' not found")).into_response(),
     };
+
+    // Validate query dimension
+    {
+        let guard = coll.read();
+        let expected_dim = guard.effective_dimension();
+        if let Err(e) = validate_query_dimension(&body.query, expected_dim) {
+            return api_error(StatusCode::BAD_REQUEST, e).into_response();
+        }
+    }
 
     let query = body.query.clone();
     let top_k = body.top_k;
@@ -370,10 +394,25 @@ async fn upsert_handler(
         return api_error(StatusCode::UNAUTHORIZED, "unauthorized").into_response();
     }
 
+    // Validate batch size
+    if let Err(e) = validate_batch_size(body.vectors.len()) {
+        return api_error(StatusCode::BAD_REQUEST, e).into_response();
+    }
+
     let coll = match state.get_collection(&name) {
         Some(c) => c,
         None => return api_error(StatusCode::NOT_FOUND, format!("collection '{name}' not found")).into_response(),
     };
+
+    // Validate vector dimensions
+    {
+        let guard = coll.read();
+        let expected_dim = guard.effective_dimension();
+        let vecs: Vec<Vec<f32>> = body.vectors.iter().map(|r| r.vector.clone()).collect();
+        if let Err(e) = validate_vector_dimensions(&vecs, expected_dim) {
+            return api_error(StatusCode::BAD_REQUEST, e).into_response();
+        }
+    }
 
     let count = body.vectors.len();
 
@@ -381,11 +420,14 @@ async fn upsert_handler(
     {
         let mut wal = state.wal.lock();
         for record in &body.vectors {
-            let _ = wal.append(&forge_db::WalOperation::Insert {
+            if let Err(e) = wal.append(&forge_db::WalOperation::Insert {
                 id: record.id,
                 vector: record.vector.clone(),
                 metadata: record.metadata.as_ref().map(|m| m.to_string()),
-            });
+            }) {
+                tracing::error!(error = %e, "WAL append failed for upsert");
+                return api_error(StatusCode::INTERNAL_SERVER_ERROR, format!("WAL write failed: {e}")).into_response();
+            }
         }
     }
 
@@ -434,6 +476,17 @@ async fn delete_vectors_handler(
         None => return api_error(StatusCode::NOT_FOUND, format!("collection '{name}' not found")).into_response(),
     };
 
+    // WAL: record deletes before applying to index
+    {
+        let mut wal = state.wal.lock();
+        for &id in &body.ids {
+            if let Err(e) = wal.append(&forge_db::WalOperation::Delete { id }) {
+                tracing::error!(error = %e, "WAL append failed for delete");
+                return api_error(StatusCode::INTERNAL_SERVER_ERROR, format!("WAL write failed: {e}")).into_response();
+            }
+        }
+    }
+
     let mut deleted = 0u64;
     {
         let mut guard = coll.write();
@@ -441,14 +494,6 @@ async fn delete_vectors_handler(
             if guard.delete(id) {
                 deleted += 1;
             }
-        }
-    }
-
-    // WAL: record deletes
-    {
-        let mut wal = state.wal.lock();
-        for &id in &body.ids {
-            let _ = wal.append(&forge_db::WalOperation::Delete { id });
         }
     }
 
@@ -468,10 +513,28 @@ async fn batch_search_handler(
         return api_error(StatusCode::UNAUTHORIZED, "unauthorized").into_response();
     }
 
+    // Validate top_k for each query
+    for (i, q) in body.queries.iter().enumerate() {
+        if let Err(e) = validate_top_k(q.top_k) {
+            return api_error(StatusCode::BAD_REQUEST, format!("query[{}]: {}", i, e)).into_response();
+        }
+    }
+
     let coll = match state.get_collection(&name) {
         Some(c) => c,
         None => return api_error(StatusCode::NOT_FOUND, format!("collection '{name}' not found")).into_response(),
     };
+
+    // Validate query dimensions
+    {
+        let guard = coll.read();
+        let expected_dim = guard.effective_dimension();
+        for (i, q) in body.queries.iter().enumerate() {
+            if let Err(e) = validate_query_dimension(&q.query, expected_dim) {
+                return api_error(StatusCode::BAD_REQUEST, format!("query[{}]: {}", i, e)).into_response();
+            }
+        }
+    }
 
     let start = Instant::now();
     let queries = body.queries.clone();
@@ -567,7 +630,9 @@ async fn checkpoint_handler(
     let seq = {
         let mut wal = state.wal.lock();
         let s = wal.next_sequence();
-        let _ = wal.checkpoint(s.saturating_sub(1));
+        if let Err(e) = wal.checkpoint(s.saturating_sub(1)) {
+            tracing::error!(error = %e, "WAL checkpoint failed");
+        }
         s
     };
 

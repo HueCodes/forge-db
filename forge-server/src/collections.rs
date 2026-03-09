@@ -13,6 +13,105 @@ use forge_db::{
 };
 use serde::{Deserialize, Serialize};
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Input validation constants and helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Maximum allowed value for top_k in search queries.
+pub const MAX_TOP_K: usize = 10_000;
+
+/// Maximum number of vectors in a single batch insert.
+pub const MAX_BATCH_SIZE: usize = 100_000;
+
+/// Maximum length for a collection name.
+pub const MAX_COLLECTION_NAME_LEN: usize = 128;
+
+/// Validate a collection name: non-empty, <= 128 chars, matches `[a-zA-Z0-9_-]+`.
+pub fn validate_collection_name(name: &str) -> Result<(), String> {
+    if name.is_empty() {
+        return Err("collection name must not be empty".to_string());
+    }
+    if name.len() > MAX_COLLECTION_NAME_LEN {
+        return Err(format!(
+            "collection name exceeds maximum length of {} characters",
+            MAX_COLLECTION_NAME_LEN
+        ));
+    }
+    if !name
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    {
+        return Err(
+            "collection name must match pattern [a-zA-Z0-9_-]+".to_string(),
+        );
+    }
+    Ok(())
+}
+
+/// Validate that top_k is within bounds.
+pub fn validate_top_k(k: usize) -> Result<(), String> {
+    if k == 0 {
+        return Err("top_k must be greater than 0".to_string());
+    }
+    if k > MAX_TOP_K {
+        return Err(format!("top_k must not exceed {}", MAX_TOP_K));
+    }
+    Ok(())
+}
+
+/// Validate batch size.
+pub fn validate_batch_size(count: usize) -> Result<(), String> {
+    if count > MAX_BATCH_SIZE {
+        return Err(format!(
+            "batch size {} exceeds maximum of {} vectors",
+            count, MAX_BATCH_SIZE
+        ));
+    }
+    Ok(())
+}
+
+/// Validate that all vectors have the expected dimension. If `expected_dim` is 0
+/// (unconfigured), infer from the first vector and return the inferred dimension.
+pub fn validate_vector_dimensions(
+    vectors: &[Vec<f32>],
+    expected_dim: usize,
+) -> Result<usize, String> {
+    if vectors.is_empty() {
+        return Ok(expected_dim);
+    }
+    let dim = if expected_dim == 0 {
+        vectors[0].len()
+    } else {
+        expected_dim
+    };
+    for (i, v) in vectors.iter().enumerate() {
+        if v.len() != dim {
+            return Err(format!(
+                "vector at index {} has dimension {} but expected {}",
+                i,
+                v.len(),
+                dim
+            ));
+        }
+    }
+    Ok(dim)
+}
+
+/// Validate that a query vector matches the expected dimension.
+pub fn validate_query_dimension(query: &[f32], expected_dim: usize) -> Result<(), String> {
+    if expected_dim == 0 {
+        return Ok(());
+    }
+    if query.len() != expected_dim {
+        return Err(format!(
+            "query vector has dimension {} but collection expects {}",
+            query.len(),
+            expected_dim
+        ));
+    }
+    Ok(())
+}
+
 /// Convert a serde_json::Value to a MetadataValue.
 fn json_value_to_metadata(val: &serde_json::Value) -> forge_db::MetadataValue {
     match val {
@@ -225,6 +324,18 @@ impl Collection {
     /// Delete a vector by ID.
     pub fn delete(&mut self, id: u64) -> bool {
         self.index.delete(id)
+    }
+
+    /// Return the effective dimension for this collection.
+    /// Uses the meta dimension if set, otherwise queries the index.
+    pub fn effective_dimension(&self) -> usize {
+        if self.meta.dimension > 0 {
+            self.meta.dimension
+        } else if self.index.len() > 0 {
+            self.index.dimension()
+        } else {
+            0
+        }
     }
 
     /// Number of vectors in the collection.

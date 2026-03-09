@@ -210,8 +210,13 @@ impl ProductQuantizer {
 
     /// Fast asymmetric distance - optimized for latency.
     /// Returns squared distance (skip sqrt for comparison).
+    ///
+    /// # Safety invariants (checked in debug builds)
+    /// - `codes.len() == lookup_table.len()` (one code per subvector)
+    /// - Each `codes[i] < lookup_table[i].len()` (valid PQ centroid index)
     #[inline(always)]
     pub fn asymmetric_distance_fast(&self, lookup_table: &[Vec<f32>], codes: &[u8]) -> f32 {
+        debug_assert_eq!(codes.len(), lookup_table.len(), "codes/table length mismatch");
         // Manual unrolling for common case (avoids iterator overhead)
         let mut sum = 0.0f32;
         let n = codes.len();
@@ -397,10 +402,16 @@ pub unsafe fn batch_asymmetric_distance_avx2(tables: &[&[f32]], codes: &[u8]) ->
 }
 
 /// Scalar fallback for flat table lookup.
+///
+/// # Safety invariants (checked in debug builds)
+/// - `table.len() >= codes.len() * 256` (flat table has 256 entries per subvector)
+/// - Each `codes[i] < 256` (valid 8-bit PQ centroid index)
 #[inline(always)]
 pub fn asymmetric_distance_flat_scalar(table: &[f32], codes: &[u8]) -> f32 {
+    debug_assert!(table.len() >= codes.len() * 256, "flat table too small");
     let mut sum = 0.0f32;
     for (m, &code) in codes.iter().enumerate() {
+        debug_assert!((m * 256 + code as usize) < table.len());
         sum += unsafe { *table.get_unchecked(m * 256 + code as usize) };
     }
     sum
@@ -670,6 +681,7 @@ impl ProductQuantizer4Bit {
     /// * `packed_codes` - Packed codes [ceil(n_subvectors / 2)]
     #[inline(always)]
     pub fn asymmetric_distance_4bit(&self, table: &[f32], packed_codes: &[u8]) -> f32 {
+        debug_assert!(table.len() >= self.n_subvectors * 16, "4-bit flat table too small");
         let mut sum = 0.0f32;
         let mut m = 0; // subvector index
 
@@ -695,8 +707,10 @@ impl ProductQuantizer4Bit {
     /// Compute asymmetric distance using unpacked codes (for testing/compatibility).
     #[inline(always)]
     pub fn asymmetric_distance_unpacked(&self, table: &[f32], codes: &[u8]) -> f32 {
+        debug_assert!(table.len() >= codes.len() * 16, "4-bit unpacked table too small");
         let mut sum = 0.0f32;
         for (m, &code) in codes.iter().enumerate() {
+            debug_assert!((code as usize) < 16, "4-bit code out of range: {code}");
             sum += unsafe { *table.get_unchecked(m * 16 + code as usize) };
         }
         sum

@@ -400,7 +400,10 @@ impl HNSWIndex {
             return;
         }
 
-        let entry_point = self.entry_point.unwrap();
+        let entry_point = match self.entry_point {
+            Some(ep) => ep,
+            None => return, // No entry point means no graph to connect to
+        };
         let mut ep = vec![entry_point];
 
         // Search from top layer down to target layer + 1
@@ -673,7 +676,11 @@ impl HNSWIndex {
         let cached_points = self.entry_cache.get_points();
 
         if cached_points.len() <= 1 {
-            return self.entry_point.unwrap();
+            // Called only from search paths that already verified entry_point.is_some()
+            return match self.entry_point {
+                Some(ep) => ep,
+                None => return 0,
+            };
         }
 
         let mut best_id = cached_points[0];
@@ -783,7 +790,10 @@ impl HNSWIndex {
 
     /// Fallback search using locks (for when graph isn't finalized).
     fn search_locked(&self, query: &[f32], k: usize) -> Vec<(u64, f32)> {
-        let entry_point = self.entry_point.unwrap();
+        let entry_point = match self.entry_point {
+            Some(ep) => ep,
+            None => return Vec::new(),
+        };
         let mut ep = vec![entry_point];
 
         for lc in (1..=self.max_layer).rev() {

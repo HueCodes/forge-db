@@ -182,17 +182,17 @@ impl PyIvfPqIndex {
     }
 
     /// Return index statistics as a dict.
-    pub fn stats(&self, py: Python<'_>) -> PyObject {
+    pub fn stats(&self, py: Python<'_>) -> PyResult<PyObject> {
         let s = self.inner.statistics();
         let dict = pyo3::types::PyDict::new_bound(py);
-        dict.set_item("num_vectors", s.num_vectors).unwrap();
-        dict.set_item("num_partitions", s.num_partitions).unwrap();
-        dict.set_item("dimension", s.dimension).unwrap();
-        dict.set_item("memory_mb", s.memory_bytes as f32 / (1024.0 * 1024.0)).unwrap();
-        dict.set_item("compression_ratio", s.compression_ratio).unwrap();
-        dict.set_item("num_tombstones", s.num_tombstones).unwrap();
-        dict.set_item("nprobe", s.nprobe).unwrap();
-        dict.into()
+        dict.set_item("num_vectors", s.num_vectors)?;
+        dict.set_item("num_partitions", s.num_partitions)?;
+        dict.set_item("dimension", s.dimension)?;
+        dict.set_item("memory_mb", s.memory_bytes as f32 / (1024.0 * 1024.0))?;
+        dict.set_item("compression_ratio", s.compression_ratio)?;
+        dict.set_item("num_tombstones", s.num_tombstones)?;
+        dict.set_item("nprobe", s.nprobe)?;
+        Ok(dict.into())
     }
 
     pub fn __repr__(&self) -> String {
